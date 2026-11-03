@@ -23,6 +23,16 @@ struct GeminiClientMessage: Encodable, Sendable {
         var responseModalities: [String]
         var temperature: Double?
         var maxOutputTokens: Int?
+        /// Mimi 式 Live 翻译专用：只在翻译模型 setup 里出现
+        var translationConfig: TranslationConfig?
+    }
+
+    /// Live 翻译配置（gemini-3.5-live-translate-preview）。
+    /// 注意：转写开关 inputAudioTranscription / outputAudioTranscription 必须放在 setup 顶层，
+    /// 只有 translationConfig 属于 generationConfig（Mimi 已验证的形状）。
+    struct TranslationConfig: Encodable, Sendable {
+        var targetLanguageCode: String
+        var echoTargetLanguage: Bool
     }
 
     struct Content: Encodable, Sendable {
@@ -136,10 +146,12 @@ struct GeminiServerMessage: Decodable, Sendable {
 
 enum GeminiEvent: Sendable {
     case connectionState(ConnectionState)
-    /// 实时转写（中间结果，频繁更新，isFinal == false）
+    /// 实时转写（转写模型路径：中间结果 isFinal == false，定稿 isFinal == true）
     case transcript(text: String, isFinal: Bool)
-    /// 模型文本输出增量（captionSource == .modelOutput 时使用）
-    case modelText(String)
+    /// Live 翻译模型的原文转写增量（服务端发的是增量/累积重发，由 ViewModel 合并）
+    case transcriptDelta(String)
+    /// Live 翻译模型的译文转写增量（由 ViewModel 合并）
+    case translationDelta(String)
     case turnComplete
     case error(String)
 }

@@ -13,7 +13,6 @@ final class CaptionViewModel {
     private let settings: AppSettings
     private var captureSource: (any AudioCaptureSource)?
     private var client: GeminiLiveClient?
-    private var translator: TranslationService?
     private var audioTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
 
@@ -23,27 +22,15 @@ final class CaptionViewModel {
     private var committedText = ""
     /// 专用转写模型按“句”返回 final，且不一定发 turnComplete，需要在 final 时直接结束当前行
     private var finalizesOnFinalTranscript = false
+    /// 当前 turn 累积的原文 / 译文（翻译模型发的是增量或累积重发，需合并，Mimi merge_gemini 同款思路）。
+    /// 注意：翻译模式由事件类型区分（transcriptDelta/translationDelta vs transcript），无需额外 flag。
+    private var sourceAccumulator = ""
+    private var translationAccumulator = ""
 
-    // MARK: 翻译调度状态
-    /// 每条字幕的翻译请求序号，用于丢弃过期的响应
-    private var translationSequence: [UUID: Int] = [:]
-    /// 正在进行的实时（半句）翻译任务
-    private var interimTranslationTask: Task<Void, Never>?
-    /// 上一次发起实时翻译时的原文，避免每个字符都触发请求
-    private var lastInterimTranslatedText = ""
-    /// 上一次发起半句翻译的时间：半句翻译至少间隔这么久，避免说话不停时请求串成灾
-    private var lastInterimRequestAt: ContinuousClock.Instant?
-    /// 半句翻译的最小间隔（参考 Mimi PreviewRequestPacer 的请求节流思路）
-    private static let interimRequestSpacing: Duration = .seconds(1.5)
-    /// 整句翻译串行队列的队尾：前一句译完再发下一句，避免并发 burst 撞 429
-    private var finalTranslationTail: Task<Void, Never>?
-    /// 相同原文直接复用上一次译文，不再发新请求（重复内容不再刷翻译配额）
-    private var lastTranslationCache: (source: String, target: String, translation: String)?
-    /// turnComplete 后的尾巴静默期：等迟到的转写尾巴进来再定稿（Mimi GEMINI_TURN_TAIL_QUIET_MS 同款思路）
+    /// turnComplete 后的尾巴静默期：等迟到的转写尾巴进来再定稿（Mimi GEMINI_TURN_TAIL_QUIET_MS 同款思路）。
+    /// 静默期内有新文本到达会把 500ms 计时器重来一遍，把尾巴吸进当前行。
     private var turnSettleTask: Task<Void, Never>?
     private static let turnTailQuietPeriod: Duration = .milliseconds(500)
-    /// 最近几句已完成的原文，作为翻译上下文
-    private var recentOriginals: [String] = []
     /// 每条已完成字幕的自动消失定时任务
     private var expiryTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -65,22 +52,17 @@ final class CaptionViewModel {
             return
         }
 
+        // 翻译开启时走 Mimi 式 Live 流式翻译：单条 WebSocket 接专用翻译模型，
+        // 原文与译文以双转写流下发，不再按句调用 REST 翻译接口（无每分钟配额限制）。
+        let liveTranslationTarget: String? = settings.translationEnabled ? settings.targetLanguage.rawValue : nil
         let client = GeminiLiveClient(configuration: .init(
             apiKey: settings.apiKey,
-            model: settings.modelName,
-            captionSource: settings.captionSource,
+            model: liveTranslationTarget != nil ? GeminiLiveModel.translate : settings.modelName,
+            liveTranslationTarget: liveTranslationTarget,
             keepAliveInterval: .seconds(settings.keepAliveIntervalSeconds)
         ))
         self.client = client
-        finalizesOnFinalTranscript = GeminiLiveModel.isTranscribeModel(settings.modelName)
-
-        translator = settings.translationEnabled
-            ? TranslationService(configuration: .init(
-                apiKey: settings.apiKey,
-                model: settings.translationModel,
-                targetLanguage: settings.targetLanguage
-            ))
-            : nil
+        finalizesOnFinalTranscript = liveTranslationTarget == nil && GeminiLiveModel.isTranscribeModel(settings.modelName)
 
         let source: any AudioCaptureSource = switch settings.audioSource {
         case .microphone: MicrophoneCapture()
@@ -134,11 +116,6 @@ final class CaptionViewModel {
 
         cancelTurnSettle()
         finalizeActiveCaption()
-        interimTranslationTask?.cancel()
-        interimTranslationTask = nil
-        finalTranslationTail?.cancel()
-        finalTranslationTail = nil
-        translator = nil
         connectionState = .idle
     }
 
@@ -146,18 +123,11 @@ final class CaptionViewModel {
         captions.removeAll()
         activeCaptionID = nil
         committedText = ""
+        sourceAccumulator = ""
+        translationAccumulator = ""
         cancelTurnSettle()
         expiryTasks.values.forEach { $0.cancel() }
         expiryTasks.removeAll()
-        translationSequence.removeAll()
-        recentOriginals.removeAll()
-        lastInterimTranslatedText = ""
-        lastInterimRequestAt = nil
-        lastTranslationCache = nil
-        interimTranslationTask?.cancel()
-        interimTranslationTask = nil
-        finalTranslationTail?.cancel()
-        finalTranslationTail = nil
     }
 
     // MARK: - 事件处理
@@ -176,27 +146,36 @@ final class CaptionViewModel {
             }
 
         case .transcript(let text, let isFinal):
-            // 新文本到达：之前排队的 turnComplete 定稿取消，尾巴并入当前行
-            cancelTurnSettle()
+            // 新文本到达：静默期计时器重来，把尾巴吸进当前行
+            restartTurnSettle()
             if isFinal {
                 committedText += text
                 upsertActiveCaption(text: committedText, isFinal: false)
                 if finalizesOnFinalTranscript {
                     finalizeActiveCaption()
-                } else {
-                    scheduleInterimTranslation()
                 }
             } else {
                 // interim 为当前片段的实时预览，叠加在已确认文本之后
                 upsertActiveCaption(text: committedText + text, isFinal: false)
-                scheduleInterimTranslation()
             }
 
-        case .modelText(let text):
-            cancelTurnSettle()
-            committedText += text
-            upsertActiveCaption(text: committedText, isFinal: false)
-            scheduleInterimTranslation()
+        case .transcriptDelta(let delta):
+            // 翻译模型的原文增量：合并后更新当前行
+            restartTurnSettle()
+            if let merged = Self.mergeChunk(sourceAccumulator, delta) {
+                sourceAccumulator = merged
+                upsertActiveCaption(text: merged, isFinal: false)
+            }
+
+        case .translationDelta(let delta):
+            // 翻译模型的译文增量：只挂到已存在的原文行上。turn 定稿后（无原文行）
+            // 才到的迟到尾巴直接丢弃，避免错挂到下一句。
+            guard activeCaptionID != nil else { return }
+            restartTurnSettle()
+            if let merged = Self.mergeChunk(translationAccumulator, delta) {
+                translationAccumulator = merged
+                upsertActiveTranslation(merged)
+            }
 
         case .turnComplete:
             scheduleTurnSettle()
@@ -206,8 +185,19 @@ final class CaptionViewModel {
         }
     }
 
+    /// 合并模型发来的文本块（Mimi merge_gemini 的简化版）：
+    /// 纯增量则追加，累积重发（以已有文本为前缀且更长）则整体替换，完全重复则忽略。
+    /// 返回合并后的全文；块没有带来新内容时返回 nil。
+    private static func mergeChunk(_ accumulated: String, _ chunk: String) -> String? {
+        guard !chunk.isEmpty else { return nil }
+        if accumulated.isEmpty { return chunk }
+        if chunk.count > accumulated.count, chunk.hasPrefix(accumulated) { return chunk }
+        if chunk == accumulated { return nil }
+        return accumulated + chunk
+    }
+
     /// turnComplete 后不立即定稿：等 500ms 静默期，把迟到的转写尾巴吸进当前行再定稿。
-    /// 期间有新文本到达会取消这次排队（见 transcript / modelText 分支）。
+    /// 期间有新文本到达会把计时器重来一遍（见 restartTurnSettle）。
     private func scheduleTurnSettle() {
         turnSettleTask?.cancel()
         turnSettleTask = Task { [weak self] in
@@ -216,6 +206,13 @@ final class CaptionViewModel {
             self.turnSettleTask = nil
             self.finalizeActiveCaption()
         }
+    }
+
+    /// 有新文本到达且已有排队定稿时，把 500ms 计时器重来（尾巴并入当前行）；
+    /// 没有排队时什么都不做。
+    private func restartTurnSettle() {
+        guard turnSettleTask != nil else { return }
+        scheduleTurnSettle()
     }
 
     private func cancelTurnSettle() {
@@ -239,20 +236,26 @@ final class CaptionViewModel {
         trimToMaxLines()
     }
 
+    /// 把（合并后的）译文挂到当前流式字幕行上。
+    private func upsertActiveTranslation(_ text: String) {
+        guard let id = activeCaptionID,
+              let index = captions.firstIndex(where: { $0.id == id })
+        else { return }
+        captions[index].translation = text
+        captions[index].translationIsFinal = false
+    }
+
     private func finalizeActiveCaption() {
         if let id = activeCaptionID, let index = captions.firstIndex(where: { $0.id == id }) {
             captions[index].isFinal = true
-            let original = captions[index].text
-            interimTranslationTask?.cancel()
-            interimTranslationTask = nil
-            requestTranslation(for: id, text: original)
-            recentOriginals.append(original)
-            if recentOriginals.count > 3 { recentOriginals.removeFirst() }
+            // turn 已结束：已有译文即为该句最终译文，不再有“翻译中”状态
+            captions[index].translationIsFinal = true
             scheduleExpiry(for: id)
         }
         activeCaptionID = nil
         committedText = ""
-        lastInterimTranslatedText = ""
+        sourceAccumulator = ""
+        translationAccumulator = ""
     }
 
     /// 整句结束后开始计时，到期自动从屏幕移除；期间若被新字幕挤出则一并清理定时任务
@@ -263,125 +266,8 @@ final class CaptionViewModel {
             try? await Task.sleep(for: .seconds(lifetime))
             guard let self, !Task.isCancelled else { return }
             self.expiryTasks[id] = nil
-            self.translationSequence[id] = nil
             self.captions.removeAll { $0.id == id && $0.isFinal }
         }
-    }
-
-    // MARK: - 翻译
-
-    /// 说话过程中对半句做节流翻译：同一时刻最多一个请求，新增原文足够多、且距离上次发起超过
-    /// 间隔才再次发起，避免说话不停时请求串成灾。
-    private func scheduleInterimTranslation() {
-        guard translator != nil,
-              let id = activeCaptionID,
-              let caption = captions.first(where: { $0.id == id })
-        else { return }
-
-        let text = caption.text
-        let grown = text.count - lastInterimTranslatedText.count
-        guard interimTranslationTask == nil, grown >= 6 || (lastInterimTranslatedText.isEmpty && text.count >= 4) else { return }
-
-        let now = ContinuousClock.now
-        if let last = lastInterimRequestAt, now - last < Self.interimRequestSpacing { return }
-
-        lastInterimTranslatedText = text
-        lastInterimRequestAt = now
-        interimTranslationTask = Task { [weak self] in
-            await self?.performTranslation(for: id, text: text, isPartial: true)
-            self?.interimTranslationTask = nil
-            // 请求期间原文可能又长了不少，立刻再跟进一轮（受上面的时间节流约束）
-            self?.scheduleInterimTranslation()
-        }
-    }
-
-    /// 整句翻译走串行队列：前一句译完再发下一句，避免句子密集时并发 burst 撞 429。
-    private func requestTranslation(for id: UUID, text: String) {
-        guard translator != nil else { return }
-        let previous = finalTranslationTail
-        finalTranslationTail = Task { [weak self] in
-            guard !Task.isCancelled else { return }
-            if let previous { await previous.value }
-            guard !Task.isCancelled else { return }
-            await self?.performTranslation(for: id, text: text, isPartial: false)
-        }
-    }
-
-    private func performTranslation(for id: UUID, text: String, isPartial: Bool) async {
-        guard let translator else { return }
-        let sequence = (translationSequence[id] ?? 0) + 1
-        translationSequence[id] = sequence
-        let context = recentOriginals.filter { $0 != text }
-
-        // 退化语句（惨叫/喘息的连续语气词串）不值得一次翻译请求：译文留空
-        if Self.isFillerRun(text) {
-            guard !Task.isCancelled,
-                  translationSequence[id] == sequence,
-                  let index = captions.firstIndex(where: { $0.id == id })
-            else { return }
-            captions[index].translation = ""
-            captions[index].translationIsFinal = !isPartial
-            return
-        }
-
-        // 相同原文（同一目标语言）直接复用上一次译文：重复内容不再刷翻译配额
-        if let cache = lastTranslationCache,
-           cache.source == text, cache.target == settings.targetLanguage.rawValue {
-            guard !Task.isCancelled,
-                  translationSequence[id] == sequence,
-                  let index = captions.firstIndex(where: { $0.id == id })
-            else { return }
-            // 完整句译文已到达后，不再被迟到的半句译文覆盖
-            if captions[index].translationIsFinal, isPartial { return }
-            captions[index].translation = cache.translation
-            captions[index].translationIsFinal = !isPartial
-            return
-        }
-
-        do {
-            let translated = try await translator.translate(text, context: context, isPartial: isPartial)
-            lastTranslationCache = (text, settings.targetLanguage.rawValue, translated)
-            guard !Task.isCancelled,
-                  translationSequence[id] == sequence,
-                  let index = captions.firstIndex(where: { $0.id == id })
-            else { return }
-            // 完整句译文已到达后，不再被迟到的半句译文覆盖
-            if captions[index].translationIsFinal, isPartial { return }
-            captions[index].translation = translated
-            captions[index].translationIsFinal = !isPartial
-        } catch is CancellationError {
-            return
-        } catch {
-            if !isPartial { lastError = error.localizedDescription }
-        }
-    }
-
-    /// 整句是否为退化语气词串（惨叫/喘息被识别成的连续嗯啊串）。
-    /// 与 Mimi 的 degenerate_utterance 同规则：去标点/空白/拉长音后全为语气词且达到 3 个单位；
-    /// 正常句子里的单个语气词、短串（<3）和笑声不受影响。
-    private static func isFillerRun(_ text: String) -> Bool {
-        let fillerChars: Set<Character> = [
-            "嗯", "啊", "哦", "呃", "额", "唔", "吁", "呼", "呀", "哇",
-            "あ", "ア", "う", "ウ", "え", "エ", "お", "オ", "ん", "ン",
-            "아", "어", "음", "으",
-        ]
-        let fillerWords: Set<String> = [
-            "ah", "uh", "um", "hmm", "oh", "ooh", "aah", "ugh", "mm", "mmm", "eh",
-        ]
-        let prolongation: Set<Character> = ["—", "–", "～", "〜", "ー", "ｰ"]
-        // 非字母数字视为分隔符（拉长音直接丢弃），与 Mimi 的 normalize 一致
-        let normalized = String(text.map { c -> Character in
-            if prolongation.contains(c) { return " " }
-            return (c.isLetter || c.isNumber) ? c : " "
-        })
-        // char mode：去空白后全为语气词字且 ≥3（如“啊啊啊”“嗯，啊，哦”）
-        let chars = normalized.filter { !$0.isWhitespace }
-        if chars.count >= 3 && chars.allSatisfy({ fillerChars.contains($0) }) {
-            return true
-        }
-        // word mode：按词切分后全为语气词且 ≥3 词（如“oh oh oh”）
-        let tokens = normalized.split(whereSeparator: { $0.isWhitespace }).map { $0.lowercased() }
-        return tokens.count >= 3 && tokens.allSatisfy({ fillerWords.contains($0) })
     }
 
     private func trimToMaxLines() {
@@ -390,7 +276,6 @@ final class CaptionViewModel {
         for removed in captions.prefix(overflow) {
             expiryTasks[removed.id]?.cancel()
             expiryTasks[removed.id] = nil
-            translationSequence[removed.id] = nil
         }
         captions.removeFirst(overflow)
     }

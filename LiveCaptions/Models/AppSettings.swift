@@ -15,23 +15,6 @@ enum AudioSource: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// 字幕文本来源：
-/// - `inputTranscription`：Gemini 对输入音频的转写（最接近“字幕”，推荐）
-/// - `modelOutput`：模型文本回复（配合“逐字复述”的 system instruction 使用）
-enum CaptionSource: String, CaseIterable, Identifiable, Sendable {
-    case inputTranscription
-    case modelOutput
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .inputTranscription: "输入音频转写（推荐）"
-        case .modelOutput: "模型文本输出"
-        }
-    }
-}
-
 /// 字幕翻译目标语言
 enum TargetLanguage: String, CaseIterable, Identifiable, Sendable {
     case simplifiedChinese = "zh-Hans"
@@ -52,35 +35,14 @@ enum TargetLanguage: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// 写进 prompt 的语言名称
-    var promptName: String {
-        switch self {
-        case .simplifiedChinese: "简体中文"
-        case .traditionalChinese: "繁体中文"
-        case .english: "英语"
-        case .japanese: "日语"
-        case .korean: "韩语"
-        }
-    }
-}
-
-/// 翻译用的文本模型。见 https://ai.google.dev/gemini-api/docs/models
-enum GeminiTextModel {
-    static let recommended = "gemini-3.5-flash-lite"
-
-    static let presets: [(id: String, label: String)] = [
-        (recommended, "Gemini 3.5 Flash-Lite（推荐，最快）"),
-        ("gemini-3.8-flash", "Gemini 3.8 Flash（更准，稍慢）"),
-        ("gemini-3.6-flash", "Gemini 3.6 Flash"),
-    ]
 }
 
 /// 可选的 Live API 模型。见 https://ai.google.dev/gemini-api/docs/models
 enum GeminiLiveModel {
-    /// 专用低延迟语音转写模型，字幕场景首选
+    /// 专用低延迟语音转写模型，字幕场景首选（翻译关闭时使用）
     static let recommended = "gemini-3.5-transcribe-live"
-    /// 通用对话型 Live 模型，用于“直接输出译文”模式
-    static let generalPurpose = "gemini-3.8-live"
+    /// Mimi 式 Live 流式翻译专用模型：音频进、原文转写 + 译文转写双流出（翻译开启时使用）
+    static let translate = "gemini-3.5-live-translate-preview"
 
     static let presets: [(id: String, label: String)] = [
         (recommended, "Gemini 3.5 Transcribe Live（推荐，专用转写）"),
@@ -116,10 +78,6 @@ final class AppSettings {
         didSet { defaults.set(audioSource.rawValue, forKey: Keys.audioSource) }
     }
 
-    var captionSource: CaptionSource {
-        didSet { defaults.set(captionSource.rawValue, forKey: Keys.captionSource) }
-    }
-
     var modelName: String {
         didSet { defaults.set(modelName, forKey: Keys.modelName) }
     }
@@ -143,10 +101,6 @@ final class AppSettings {
 
     var targetLanguage: TargetLanguage {
         didSet { defaults.set(targetLanguage.rawValue, forKey: Keys.targetLanguage) }
-    }
-
-    var translationModel: String {
-        didSet { defaults.set(translationModel, forKey: Keys.translationModel) }
     }
 
     /// 开启翻译时是否同时显示原文（双语字幕）
@@ -174,7 +128,6 @@ final class AppSettings {
     init() {
         maxCaptionLines = defaults.object(forKey: Keys.maxCaptionLines) as? Int ?? 3
         audioSource = AudioSource(rawValue: defaults.string(forKey: Keys.audioSource) ?? "") ?? .microphone
-        captionSource = CaptionSource(rawValue: defaults.string(forKey: Keys.captionSource) ?? "") ?? .inputTranscription
         let storedModel = defaults.string(forKey: Keys.modelName) ?? GeminiLiveModel.recommended
         // 旧版本把已关停的模型写进了 UserDefaults，启动时自动迁移到推荐模型
         modelName = GeminiLiveModel.shutDown.contains(storedModel) ? GeminiLiveModel.recommended : storedModel
@@ -183,7 +136,6 @@ final class AppSettings {
         captionLifetimeSeconds = defaults.object(forKey: Keys.captionLifetime) as? Double ?? 8
         translationEnabled = defaults.object(forKey: Keys.translationEnabled) as? Bool ?? true
         targetLanguage = TargetLanguage(rawValue: defaults.string(forKey: Keys.targetLanguage) ?? "") ?? .simplifiedChinese
-        translationModel = defaults.string(forKey: Keys.translationModel) ?? GeminiTextModel.recommended
         showOriginalText = defaults.object(forKey: Keys.showOriginalText) as? Bool ?? true
         apiKey = (try? KeychainStore.load(account: keychainAccount)) ?? ""
     }
@@ -192,11 +144,9 @@ final class AppSettings {
         static let captionLifetime = "settings.captionLifetime"
         static let translationEnabled = "settings.translationEnabled"
         static let targetLanguage = "settings.targetLanguage"
-        static let translationModel = "settings.translationModel"
         static let showOriginalText = "settings.showOriginalText"
         static let maxCaptionLines = "settings.maxCaptionLines"
         static let audioSource = "settings.audioSource"
-        static let captionSource = "settings.captionSource"
         static let modelName = "settings.modelName"
         static let fontSize = "settings.fontSize"
         static let keepAliveInterval = "settings.keepAliveInterval"

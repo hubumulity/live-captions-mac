@@ -12,7 +12,10 @@ actor GeminiLiveClient {
     struct Configuration: Sendable {
         var apiKey: String
         var model: String
-        var captionSource: CaptionSource
+        /// 非空时启用 Mimi 式 Live 流式翻译：忽略 model，改用专用翻译模型，
+        /// 音频进、原文转写 + 译文转写双流出，不再按句调用 REST 翻译接口。
+        /// 值为翻译目标语言的 BCP-47 代码（如 "zh-Hans"）。
+        var liveTranslationTarget: String?
         var keepAliveInterval: Duration = .seconds(10)
         /// 在 Ping 之外，是否在长时间静默时额外发送 20 ms 静音包（部分网络中间件会忽略 Ping 帧）
         var sendSilenceKeepAlive = false
@@ -90,7 +93,7 @@ actor GeminiLiveClient {
         switch event {
         case .speechStart:
             activityOpen = true
-            guard !usesTranscribeModel else { return }
+            guard !usesTranscribeModel, !isLiveTranslateMode else { return }
             await sendRealtime(.init(activityStart: .init()))
         case .audio(let data):
             await sendRealtime(.init(audio: .init(
@@ -99,7 +102,7 @@ actor GeminiLiveClient {
             )))
         case .speechEnd:
             activityOpen = false
-            guard !usesTranscribeModel else { return }
+            guard !usesTranscribeModel, !isLiveTranslateMode else { return }
             await sendRealtime(.init(activityEnd: .init()))
         }
     }
@@ -152,11 +155,37 @@ actor GeminiLiveClient {
         GeminiLiveModel.isTranscribeModel(configuration.model)
     }
 
+    /// 翻译模式：专用翻译模型自己做 turn 切分，不发送 activityStart/End（Mimi 同款）。
+    private var isLiveTranslateMode: Bool {
+        configuration.liveTranslationTarget != nil
+    }
+
     private func makeSetup() -> GeminiClientMessage.Setup {
+        if let target = configuration.liveTranslationTarget {
+            // Mimi 式 Live 翻译（gemini-3.5-live-translate-preview）：
+            // generationConfig 只带 AUDIO + translationConfig，转写开关放 setup 顶层，
+            // 不设 systemInstruction / realtimeInputConfig，由模型自己切分 turn。
+            return .init(
+                model: "models/\(GeminiLiveModel.translate)",
+                generationConfig: .init(
+                    responseModalities: ["AUDIO"],
+                    temperature: nil,
+                    maxOutputTokens: nil,
+                    translationConfig: .init(targetLanguageCode: target, echoTargetLanguage: true)
+                ),
+                systemInstruction: nil,
+                realtimeInputConfig: nil,
+                sessionResumption: .init(handle: resumptionHandle),
+                inputAudioTranscription: .init(languageCodes: nil, mode: nil),
+                outputAudioTranscription: .init(languageCodes: nil, mode: nil),
+                contextWindowCompression: nil
+            )
+        }
+
         if usesTranscribeModel {
             return .init(
                 model: "models/\(configuration.model)",
-                generationConfig: .init(responseModalities: ["TEXT"], temperature: nil, maxOutputTokens: nil),
+                generationConfig: .init(responseModalities: ["TEXT"], temperature: nil, maxOutputTokens: nil, translationConfig: nil),
                 systemInstruction: nil,
                 realtimeInputConfig: nil,
                 sessionResumption: .init(handle: resumptionHandle),
@@ -170,35 +199,16 @@ actor GeminiLiveClient {
         }
 
         // 通用 Live 模型（gemini-3.8-live 等）均为原生音频模型，只接受 responseModalities = AUDIO。
-        // 要拿到文字必须开启 outputAudioTranscription，由服务端把模型语音转成文本下发；音频数据本身被忽略。
-        let systemText: String
-        var inputTranscription: GeminiClientMessage.AudioTranscriptionConfig?
-        var outputTranscription: GeminiClientMessage.AudioTranscriptionConfig?
-
-        switch configuration.captionSource {
-        case .inputTranscription:
-            // 字幕来自服务端对用户音频的转写；要求模型保持沉默以减少无用的语音输出
-            systemText = "你是一个静默的转写管道。永远不要回复用户，无论听到什么都保持沉默，不要说任何话。"
-            inputTranscription = .init(
-                languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
-                mode: "VERBATIM"
-            )
-        case .modelOutput:
-            outputTranscription = .init(languageCodes: nil, mode: nil)
-            systemText = """
-            你是实时字幕引擎。逐字、原样复述用户说的话，保留原语言，不翻译、不解释、不添加任何内容。
-            如果没有听清，保持沉默。
-            """
-        }
-
+        // 字幕来自服务端对用户音频的转写；要求模型保持沉默以减少无用的语音输出。
         return .init(
             model: "models/\(configuration.model)",
             generationConfig: .init(
                 responseModalities: ["AUDIO"],
                 temperature: 0,
-                maxOutputTokens: nil
+                maxOutputTokens: nil,
+                translationConfig: nil
             ),
-            systemInstruction: .init(parts: [.init(text: systemText)]),
+            systemInstruction: .init(parts: [.init(text: "你是一个静默的转写管道。永远不要回复用户，无论听到什么都保持沉默，不要说任何话。")]),
             realtimeInputConfig: .init(
                 // 关闭服务端 VAD：由本地 SpeechGate 决定活动边界
                 automaticActivityDetection: .init(disabled: true),
@@ -206,8 +216,11 @@ actor GeminiLiveClient {
                 turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY"
             ),
             sessionResumption: .init(handle: resumptionHandle),
-            inputAudioTranscription: inputTranscription,
-            outputAudioTranscription: outputTranscription,
+            inputAudioTranscription: .init(
+                languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
+                mode: "VERBATIM"
+            ),
+            outputAudioTranscription: nil,
             contextWindowCompression: .init(slidingWindow: .init(targetTokens: nil))
         )
     }
@@ -351,7 +364,7 @@ actor GeminiLiveClient {
             emit(.connectionState(.connected))
 
             // 重连前正处于讲话中：补发 activityStart，保证片段语义完整
-            if activityOpen, !usesTranscribeModel {
+            if activityOpen, !usesTranscribeModel, !isLiveTranslateMode {
                 Task { await sendRealtime(.init(activityStart: .init())) }
             }
             return
@@ -370,22 +383,25 @@ actor GeminiLiveClient {
         }
 
         if let content = message.serverContent {
-            if let interim = content.interimInputTranscription?.text, !interim.isEmpty {
-                emit(.transcript(text: interim, isFinal: false))
-            }
-            if let final = content.inputTranscription?.text, !final.isEmpty {
-                emit(.transcript(text: final, isFinal: true))
-            }
-            if configuration.captionSource == .modelOutput {
-                // 原生音频模型的文字来自 outputTranscription；少数模型仍可能直接给 text part，两者都收
-                if let spoken = content.outputTranscription?.text, !spoken.isEmpty {
-                    emit(.modelText(spoken))
-                } else if let parts = content.modelTurn?.parts {
-                    let text = parts.compactMap(\.text).joined()
-                    if !text.isEmpty { emit(.modelText(text)) }
+            if isLiveTranslateMode {
+                // 翻译模型：inputTranscription = 原文增量，outputTranscription = 译文增量
+                // （Mimi 同款：两者都按增量/累积重发处理，不读 interimInputTranscription 避免重复）
+                if let source = content.inputTranscription?.text, !source.isEmpty {
+                    emit(.transcriptDelta(source))
+                }
+                if let translated = content.outputTranscription?.text, !translated.isEmpty {
+                    emit(.translationDelta(translated))
+                }
+            } else {
+                if let interim = content.interimInputTranscription?.text, !interim.isEmpty {
+                    emit(.transcript(text: interim, isFinal: false))
+                }
+                if let final = content.inputTranscription?.text, !final.isEmpty {
+                    emit(.transcript(text: final, isFinal: true))
                 }
             }
-            if content.turnComplete == true {
+            // generationComplete 同样视为 turn 边界（与 turnComplete 一起定稿）
+            if content.turnComplete == true || content.generationComplete == true {
                 emit(.turnComplete)
             }
         }

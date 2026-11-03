@@ -59,22 +59,22 @@ struct SettingsView: View {
                         Text("自定义：\(settings.modelName)").tag(settings.modelName)
                     }
                 }
-                .disabled(viewModel.isRunning)
+                .disabled(viewModel.isRunning || settings.translationEnabled)
 
                 TextField("自定义模型 ID", text: $settings.modelName)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(viewModel.isRunning)
+                    .disabled(viewModel.isRunning || settings.translationEnabled)
+
+                if settings.translationEnabled {
+                    Text("翻译开启时使用专用 Live 翻译模型（\(GeminiLiveModel.translate)），此处选择的模型仅在翻译关闭时生效。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 if GeminiLiveModel.shutDown.contains(settings.modelName) {
                     Text("该模型已被 Google 关停，连接会被拒绝。请选择 \(GeminiLiveModel.recommended)。")
                         .font(.caption)
                         .foregroundStyle(.red)
-                }
-
-                Picker("字幕来源", selection: $settings.captionSource) {
-                    ForEach(CaptionSource.allCases) { source in
-                        Text(source.displayName).tag(source)
-                    }
                 }
             }
 
@@ -89,20 +89,10 @@ struct SettingsView: View {
                 }
                 .disabled(!settings.translationEnabled || viewModel.isRunning)
 
-                Picker("翻译模型", selection: $settings.translationModel) {
-                    ForEach(GeminiTextModel.presets, id: \.id) { preset in
-                        Text(preset.label).tag(preset.id)
-                    }
-                    if !GeminiTextModel.presets.contains(where: { $0.id == settings.translationModel }) {
-                        Text("自定义：\(settings.translationModel)").tag(settings.translationModel)
-                    }
-                }
-                .disabled(!settings.translationEnabled || viewModel.isRunning)
-
                 Toggle("同时显示原文（双语字幕）", isOn: $settings.showOriginalText)
                     .disabled(!settings.translationEnabled)
 
-                Text("转写模型逐字听写原文，文本模型并行翻译。原文准确、可双语显示；说话中先出半句预览译文，整句结束后替换为完整译文。")
+                Text("Mimi 式 Live 流式翻译：单条 WebSocket 接专用翻译模型，音频流进、原文转写与译文转写双流实时下发。不再按句调用文本翻译接口，没有每分钟请求配额限制，也不会再报 429。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
