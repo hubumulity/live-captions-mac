@@ -2,12 +2,15 @@ name: Build macOS app
 
 on:
   push:
+    # 同时声明 branches 与 tags：只写 tags 时 GitHub 会忽略分支推送
+    branches:
+      - "**"
+    tags:
+      - "v*"
     paths:
       - "LiveCaptions/**"
       - "ci/**"
       - ".github/workflows/build-macos.yml"
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:
