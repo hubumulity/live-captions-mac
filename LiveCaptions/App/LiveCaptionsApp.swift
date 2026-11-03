@@ -6,7 +6,7 @@ import SwiftUI
 ///
 /// 菜单栏用原生 NSStatusItem + NSMenu（AppKit），不用 SwiftUI MenuBarExtra——
 /// 后者在无主窗口的应用里点开 popover 时有概率无响应，原生菜单最稳。
-/// 设置窗口用 SwiftUI WindowGroup(id:) + openWindow 打开（官方路径，不自己托管 NSWindow，
+/// 设置窗口用 SwiftUI Window（单例）+ openWindow 打开（官方路径，不自己托管 NSWindow，
 /// 之前自建 NSWindow 托管 NSHostingView/NSHostingController 在部分机器上 EXC_BAD_ACCESS）。
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -169,7 +169,8 @@ struct LiveCaptionsApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Live Captions 设置", id: "settings") {
+        // 用 Window（单例）而不用 WindowGroup：openWindow 重复调用只会聚焦已存在的窗口，不会开出两个
+        Window("Live Captions 设置", id: "settings") {
             SettingsView(settings: settings, viewModel: viewModel)
                 .frame(width: 540, height: 640)
         }
