@@ -2,13 +2,8 @@ name: Build macOS app
 
 on:
   push:
-    # master 每次提交 → autotag 自动打 patch+1 的 tag；
-    # tag 推送会再触发一次本 workflow（tags 事件），完成构建 + 发版。
-    # 只写 tags 时 GitHub 会忽略分支推送，所以 branches 与 tags 同时声明。
     branches:
       - "master"
-    tags:
-      - "v*"
     paths:
       - "LiveCaptions/**"
       - "ci/**"
@@ -19,20 +14,24 @@ permissions:
   contents: write
 
 jobs:
-  # 每次 master 有代码提交，自动把最新 v* tag 的 patch 位 +1 并推送；
-  # 手动打的 tag 不受影响（照样走下面的 build + 发版）。
-  autotag:
-    if: github.ref == 'refs/heads/master'
+  # 每次 master 有代码提交：最新 v* tag 的 patch 位 +1，打 tag 并推送。
+  # 注意：GITHUB_TOKEN 推送的 tag 不会再触发 workflow（GitHub 防循环限制），
+  # 所以构建 + 发版都在同一次 run 里完成（见 build 任务），不依赖 tag 事件。
+  version:
     runs-on: ubuntu-latest
     concurrency:
       group: autotag-${{ github.repository }}
       cancel-in-progress: false
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+      version: ${{ steps.bump.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-tags: true
 
       - name: Bump patch version and push tag
+        id: bump
         run: |
           set -euo pipefail
           git fetch --tags origin
@@ -43,17 +42,21 @@ jobs:
             tag="v0.1.0"
           fi
           if git rev-parse "$tag" >/dev/null 2>&1; then
-            echo "tag $tag already exists, skip"
-            exit 0
+            echo "tag $tag already exists, reuse it"
+          else
+            git -c user.name="github-actions[bot]" -c user.email="github-actions[bot]@users.noreply.github.com" tag "$tag"
+            git push origin "$tag" || echo "tag push raced with another run, reuse existing"
           fi
-          git -c user.name="github-actions[bot]" -c user.email="github-actions[bot]@users.noreply.github.com" tag "$tag"
-          git push origin "$tag" || { echo "tag push raced with another run, skip"; exit 0; }
-          echo "created $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
   build:
+    needs: version
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_16.4.app || sudo xcode-select -s /Applications/Xcode.app
@@ -61,20 +64,11 @@ jobs:
       - name: Toolchain info
         run: swift --version && xcodebuild -version
 
-      - name: Determine bundle version
-        id: bundle_version
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build and package LiveCaptions.app (arm64)
         shell: bash
         env:
           ARCH: arm64
-          VERSION: ${{ steps.bundle_version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: chmod +x ci/build-app.sh && ci/build-app.sh
 
       - name: Upload build log
@@ -90,8 +84,11 @@ jobs:
           name: LiveCaptions-macOS15-arm64
           path: dist/LiveCaptions-macOS15-arm64.zip
 
-      - name: Publish GitHub Release (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/LiveCaptions-macOS15-arm64.zip --title "Live Captions ${GITHUB_REF_NAME}" --generate-notes
+        run: |
+          gh release create "${{ needs.version.outputs.tag }}" \
+            dist/LiveCaptions-macOS15-arm64.zip \
+            --title "Live Captions ${{ needs.version.outputs.tag }}" \
+            --generate-notes
