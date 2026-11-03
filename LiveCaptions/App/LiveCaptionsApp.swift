@@ -30,12 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             forName: NSWindow.willCloseNotification,
             object: nil,
             queue: .main
-        ) { note in
-            // queue 是 .main，必在主线程上，可直接 assumeIsolated
-            MainActor.assumeIsolated {
-                if let w = note.object as? NSWindow, w.title == "Live Captions 设置" {
-                    Self.isSettingsWindowOpen = false
-                }
+        ) { @MainActor note in
+            if let w = note.object as? NSWindow, w.title == "Live Captions 设置" {
+                Self.isSettingsWindowOpen = false
             }
         }
         NSApp.activate(ignoringOtherApps: true)
