@@ -6,21 +6,18 @@ import SwiftUI
 ///
 /// 菜单栏用原生 NSStatusItem + NSMenu（AppKit），不用 SwiftUI MenuBarExtra——
 /// 后者在无主窗口的应用里点开 popover 时有概率无响应，原生菜单最稳。
-/// 设置窗口用 SwiftUI WindowGroup + openWindow 打开（官方路径，不自己托管 NSWindow，
-/// 之前自建 NSWindow 托管 NSHostingView/NSHostingController 在部分机器上 EXC_BAD_ACCESS）。
+/// 设置窗口用 AppDelegate 自建 NSWindow 单例 + NSHostingController（不用 SwiftUI Scene 的 openWindow，
+/// 那条路在 dock 点击时稳定开出两个；也不用固定 frame 修饰符，那会导致 EXC_BAD_ACCESS，
+/// 改用 maxWidth/maxHeight: .infinity 填充窗口）。
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     static var onLaunch: (() -> Void)?
     static var viewModel: CaptionViewModel?
     static var settings: AppSettings?
     static var onShowOverlay: (() -> Void)?
-    /// 由 SwiftUI 侧（SettingsOpener）注入的开窗闭包
-    static var openSettingsRequest: (() -> Void)?
-    /// 设置窗口打开状态（同步标志，防 openWindow 竞态双开；由 onDisappear 重置）
-    static var isSettingsWindowOpen = false
-    private static var lastSettingsOpenAt: Date?
 
     private var statusItem: NSStatusItem?
+    private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
@@ -30,10 +27,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        // 点击 Dock 图标：确保浮窗可见，并打开设置界面
+        // 点击 Dock 图标：确保浮窗可见，并打开设置界面（单例，不会重复）
         Self.onShowOverlay?()
         openSettingsWindow()
         return true
+    }
+
+    /// 最后一个窗口关闭也不退出应用（设置窗口只是关掉）
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     // MARK: - 主菜单（Cmd+, 设置 / Cmd+Q 退出）
@@ -57,39 +59,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.mainMenu = mainMenu
     }
 
-    // MARK: - 设置窗口（SwiftUI WindowGroup 官方路径）
-
-    /// 关掉设置窗口不退出应用（防御：最后一个窗口关闭也不终止）
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false
-    }
+    // MARK: - 设置窗口（NSWindow 单例 + NSHostingController）
 
     @objc func openSettingsWindow() {
-        let now = Date()
-        // 防抖：1 秒内的重复调用直接忽略（dock 点击时可能触发两次）
-        if let last = Self.lastSettingsOpenAt, now.timeIntervalSince(last) < 1.0 {
+        // 单例：已有就直接前置，不新建——从根源上杜绝双窗口
+        if let window = settingsWindow {
             NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
             return
         }
-        Self.lastSettingsOpenAt = now
+        guard let settings = Self.settings, let viewModel = Self.viewModel else { return }
 
-        // 同步标志 + NSApp.windows 双重检查，已有就不新建
-        if Self.isSettingsWindowOpen
-            || NSApp.windows.contains(where: { $0.title == "Live Captions 设置" })
-        {
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
+        // 注意：不要用 .frame(width:height:) 固定尺寸，会导致 EXC_BAD_ACCESS；
+        // 用 maxWidth/maxHeight: .infinity 让 SwiftUI 内容填充窗口（窗口尺寸由 contentRect 决定）。
+        let hosting = NSHostingController(
+            rootView: SettingsView(settings: settings, viewModel: viewModel)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 640),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = hosting
+        window.title = "Live Captions 设置"
+        window.center()
+        window.delegate = self
+        settingsWindow = window
 
-        Self.isSettingsWindowOpen = true
-        Self.openSettingsRequest?()
         NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
 
-        // 兜底：如果 1 秒后窗口仍没出现（openWindow 失败），重置标志位免得卡死
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            if !NSApp.windows.contains(where: { $0.title == "Live Captions 设置" }) {
-                Self.isSettingsWindowOpen = false
-            }
+    func windowWillClose(_ notification: Notification) {
+        if (notification.object as? NSWindow) == settingsWindow {
+            settingsWindow = nil
         }
     }
 
@@ -156,17 +161,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 }
 
-/// 注入 openWindow 的透明辅助视图，挂在常驻浮窗上（浮窗启动即显示，保证闭包可用）。
-private struct SettingsOpener: View {
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        Color.clear.onAppear {
-            AppDelegate.openSettingsRequest = { openWindow(id: "settings") }
-        }
-    }
-}
-
 @main
 struct LiveCaptionsApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -182,7 +176,6 @@ struct LiveCaptionsApp: App {
 
         let controller = OverlayPanelController(
             rootView: CaptionOverlayView(viewModel: viewModel, settings: settings)
-                .background(SettingsOpener())
         )
         _overlayController = State(initialValue: controller)
 
@@ -192,7 +185,7 @@ struct LiveCaptionsApp: App {
         AppDelegate.onLaunch = {
             controller.show()
             if settings.apiKey.isEmpty {
-                // 等 SettingsOpener 注入 openWindow 后再开
+                // 首次启动无 Key：直接调 AppDelegate 单例开窗
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     (NSApp.delegate as? AppDelegate)?.openSettingsWindow()
                 }
@@ -201,15 +194,9 @@ struct LiveCaptionsApp: App {
     }
 
     var body: some Scene {
-        // WindowGroup + open 前检查 NSApp.windows 是否已有，避免 dock 点击时系统自动开一个、手动又开一个
-        WindowGroup("Live Captions 设置", id: "settings") {
-            SettingsView(settings: settings, viewModel: viewModel)
-                .frame(width: 540, height: 640)
-                .onDisappear {
-                    AppDelegate.isSettingsWindowOpen = false
-                }
+        // 占位 Scene（SwiftUI 要求至少一个）；设置窗口由 AppDelegate 手动管理，不走 Scene
+        Settings {
+            EmptyView()
         }
-        .windowResizability(.contentSize)
-        .defaultPosition(.center)
     }
 }
