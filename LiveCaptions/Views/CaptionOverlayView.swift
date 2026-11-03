@@ -13,6 +13,8 @@ struct CaptionOverlayView: View {
                 CaptionLine(
                     caption: caption,
                     fontSize: settings.fontSize,
+                    translationEnabled: settings.translationEnabled,
+                    showOriginal: settings.showOriginalText,
                     opacity: lineOpacity(index: index, total: viewModel.captions.count)
                 )
                 .transition(
@@ -47,34 +49,72 @@ struct CaptionOverlayView: View {
     }
 }
 
+/// 一条字幕。开启翻译时译文为主行（大字），原文为辅行（小字、半透明）。
+/// 译文尚未返回时先用原文占位，避免画面空白。
 private struct CaptionLine: View {
     let caption: Caption
     let fontSize: Double
+    let translationEnabled: Bool
+    let showOriginal: Bool
     let opacity: Double
 
+    private var primaryText: String {
+        if translationEnabled, let translation = caption.translation, !translation.isEmpty {
+            return translation
+        }
+        return caption.text
+    }
+
+    private var secondaryText: String? {
+        guard translationEnabled, showOriginal,
+              let translation = caption.translation, !translation.isEmpty
+        else { return nil }
+        return caption.text
+    }
+
+    /// 译文还在路上（原文已就绪但尚无译文）
+    private var isAwaitingTranslation: Bool {
+        translationEnabled && (caption.translation ?? "").isEmpty
+    }
+
     var body: some View {
-        Text(caption.text)
-            .font(.system(size: fontSize, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white)
-            .multilineTextAlignment(.leading)
-            .lineLimit(2)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(.black.opacity(0.72))
-            )
-            .overlay(alignment: .trailing) {
-                if !caption.isFinal {
-                    Circle()
-                        .fill(.green)
-                        .frame(width: 8, height: 8)
-                        .padding(.trailing, 6)
-                        .accessibilityLabel("正在识别")
-                }
+        VStack(alignment: .leading, spacing: 2) {
+            if let secondaryText {
+                Text(secondaryText)
+                    .font(.system(size: fontSize * 0.55, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .lineLimit(1)
+                    .truncationMode(.head)
             }
-            .opacity(opacity)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text(primaryText)
+                .font(.system(size: fontSize, weight: .semibold, design: .rounded))
+                .foregroundStyle(isAwaitingTranslation ? .white.opacity(0.85) : .white)
+                .lineLimit(2)
+        }
+        .multilineTextAlignment(.leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.black.opacity(0.72))
+        )
+        .overlay(alignment: .topTrailing) {
+            if !caption.isFinal {
+                Circle()
+                    .fill(.green)
+                    .frame(width: 8, height: 8)
+                    .padding(8)
+                    .accessibilityLabel("正在识别")
+            } else if translationEnabled, !caption.translationIsFinal {
+                Circle()
+                    .fill(.yellow)
+                    .frame(width: 8, height: 8)
+                    .padding(8)
+                    .accessibilityLabel("正在翻译")
+            }
+        }
+        .opacity(opacity)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

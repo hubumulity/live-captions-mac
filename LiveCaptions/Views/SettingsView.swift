@@ -78,6 +78,35 @@ struct SettingsView: View {
                 }
             }
 
+            Section("实时翻译") {
+                Toggle("翻译字幕", isOn: $settings.translationEnabled)
+                    .disabled(viewModel.isRunning)
+
+                Picker("目标语言", selection: $settings.targetLanguage) {
+                    ForEach(TargetLanguage.allCases) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+                .disabled(!settings.translationEnabled || viewModel.isRunning)
+
+                Picker("翻译模型", selection: $settings.translationModel) {
+                    ForEach(GeminiTextModel.presets, id: \.id) { preset in
+                        Text(preset.label).tag(preset.id)
+                    }
+                    if !GeminiTextModel.presets.contains(where: { $0.id == settings.translationModel }) {
+                        Text("自定义：\(settings.translationModel)").tag(settings.translationModel)
+                    }
+                }
+                .disabled(!settings.translationEnabled || viewModel.isRunning)
+
+                Toggle("同时显示原文（双语字幕）", isOn: $settings.showOriginalText)
+                    .disabled(!settings.translationEnabled)
+
+                Text("转写模型负责听写原文，翻译模型并行把每句译成目标语言。说话过程中会先显示半句的预览译文，整句结束后替换为完整译文。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("字幕显示") {
                 LabeledContent("同时显示的最大字幕条数：\(settings.maxCaptionLines)") {
                     Slider(

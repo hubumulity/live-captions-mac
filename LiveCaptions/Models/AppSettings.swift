@@ -32,6 +32,49 @@ enum CaptionSource: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// 字幕翻译目标语言
+enum TargetLanguage: String, CaseIterable, Identifiable, Sendable {
+    case simplifiedChinese = "zh-Hans"
+    case traditionalChinese = "zh-Hant"
+    case english = "en"
+    case japanese = "ja"
+    case korean = "ko"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .simplifiedChinese: "简体中文"
+        case .traditionalChinese: "繁體中文"
+        case .english: "English"
+        case .japanese: "日本語"
+        case .korean: "한국어"
+        }
+    }
+
+    /// 写进 prompt 的语言名称
+    var promptName: String {
+        switch self {
+        case .simplifiedChinese: "简体中文"
+        case .traditionalChinese: "繁体中文"
+        case .english: "英语"
+        case .japanese: "日语"
+        case .korean: "韩语"
+        }
+    }
+}
+
+/// 翻译用的文本模型。见 https://ai.google.dev/gemini-api/docs/models
+enum GeminiTextModel {
+    static let recommended = "gemini-3.5-flash-lite"
+
+    static let presets: [(id: String, label: String)] = [
+        (recommended, "Gemini 3.5 Flash-Lite（推荐，最快）"),
+        ("gemini-3.8-flash", "Gemini 3.8 Flash（更准，稍慢）"),
+        ("gemini-3.6-flash", "Gemini 3.6 Flash"),
+    ]
+}
+
 /// 可选的 Live API 模型。见 https://ai.google.dev/gemini-api/docs/models
 enum GeminiLiveModel {
     /// 专用低延迟语音转写模型，字幕场景首选
@@ -87,6 +130,23 @@ final class AppSettings {
         didSet { defaults.set(keepAliveIntervalSeconds, forKey: Keys.keepAliveInterval) }
     }
 
+    var translationEnabled: Bool {
+        didSet { defaults.set(translationEnabled, forKey: Keys.translationEnabled) }
+    }
+
+    var targetLanguage: TargetLanguage {
+        didSet { defaults.set(targetLanguage.rawValue, forKey: Keys.targetLanguage) }
+    }
+
+    var translationModel: String {
+        didSet { defaults.set(translationModel, forKey: Keys.translationModel) }
+    }
+
+    /// 开启翻译时是否同时显示原文（双语字幕）
+    var showOriginalText: Bool {
+        didSet { defaults.set(showOriginalText, forKey: Keys.showOriginalText) }
+    }
+
     /// 内存中的 API Key 副本；写入时同步到 Keychain。
     var apiKey: String {
         didSet {
@@ -113,10 +173,18 @@ final class AppSettings {
         modelName = GeminiLiveModel.shutDown.contains(storedModel) ? GeminiLiveModel.recommended : storedModel
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 28
         keepAliveIntervalSeconds = defaults.object(forKey: Keys.keepAliveInterval) as? Double ?? 10
+        translationEnabled = defaults.object(forKey: Keys.translationEnabled) as? Bool ?? true
+        targetLanguage = TargetLanguage(rawValue: defaults.string(forKey: Keys.targetLanguage) ?? "") ?? .simplifiedChinese
+        translationModel = defaults.string(forKey: Keys.translationModel) ?? GeminiTextModel.recommended
+        showOriginalText = defaults.object(forKey: Keys.showOriginalText) as? Bool ?? true
         apiKey = (try? KeychainStore.load(account: keychainAccount)) ?? ""
     }
 
     private enum Keys {
+        static let translationEnabled = "settings.translationEnabled"
+        static let targetLanguage = "settings.targetLanguage"
+        static let translationModel = "settings.translationModel"
+        static let showOriginalText = "settings.showOriginalText"
         static let maxCaptionLines = "settings.maxCaptionLines"
         static let audioSource = "settings.audioSource"
         static let captionSource = "settings.captionSource"
