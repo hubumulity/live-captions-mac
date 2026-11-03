@@ -166,35 +166,38 @@ actor GeminiLiveClient {
                     languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
                     mode: "VERBATIM"
                 ),
+                outputAudioTranscription: nil,
                 contextWindowCompression: nil
             )
         }
 
+        // 通用 Live 模型（gemini-3.8-live 等）均为原生音频模型，只接受 responseModalities = AUDIO。
+        // 要拿到文字必须开启 outputAudioTranscription，由服务端把模型语音转成文本下发；音频数据本身被忽略。
         let systemText: String
-        var maxOutputTokens: Int?
         var inputTranscription: GeminiClientMessage.AudioTranscriptionConfig?
+        var outputTranscription: GeminiClientMessage.AudioTranscriptionConfig?
 
         switch configuration.captionSource {
         case .inputTranscription:
-            // 字幕来自服务端转写；模型回复被压到最短，节省 Token。
-            systemText = "你是一个静默的转写管道。永远不要回复用户，无论听到什么，只输出一个空格。"
-            maxOutputTokens = 1
+            // 字幕来自服务端对用户音频的转写；要求模型保持沉默以减少无用的语音输出
+            systemText = "你是一个静默的转写管道。永远不要回复用户，无论听到什么都保持沉默，不要说任何话。"
             inputTranscription = .init(
                 languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
                 mode: "VERBATIM"
             )
         case .modelOutput:
+            outputTranscription = .init(languageCodes: nil, mode: nil)
             if let target = configuration.directTranslationTarget {
                 systemText = """
-                你是实时同声传译字幕引擎。把用户说的每一句话翻译成\(target)，只输出译文。
-                不要回答问题、不要回应用户、不要解释、不要加前缀或引号；无论听到什么都只做翻译。
+                你是实时同声传译字幕引擎。把用户说的每一句话翻译成\(target)，只说出译文。
+                不要回答问题、不要回应用户、不要解释、不要加前缀；无论听到什么都只做翻译。
                 保留人名、品牌名等专有名词；口语化、简洁，符合字幕阅读习惯。
-                如果没有听清，输出空字符串。
+                如果没有听清，保持沉默。
                 """
             } else {
                 systemText = """
-                你是实时字幕引擎。逐字、原样转写用户说的话，保留原语言，不翻译、不解释、不加标点以外的任何内容。
-                如果没有听清，输出空字符串。
+                你是实时字幕引擎。逐字、原样复述用户说的话，保留原语言，不翻译、不解释、不添加任何内容。
+                如果没有听清，保持沉默。
                 """
             }
         }
@@ -202,9 +205,9 @@ actor GeminiLiveClient {
         return .init(
             model: "models/\(configuration.model)",
             generationConfig: .init(
-                responseModalities: ["TEXT"],
+                responseModalities: ["AUDIO"],
                 temperature: 0,
-                maxOutputTokens: maxOutputTokens
+                maxOutputTokens: nil
             ),
             systemInstruction: .init(parts: [.init(text: systemText)]),
             realtimeInputConfig: .init(
@@ -215,6 +218,7 @@ actor GeminiLiveClient {
             ),
             sessionResumption: .init(handle: resumptionHandle),
             inputAudioTranscription: inputTranscription,
+            outputAudioTranscription: outputTranscription,
             contextWindowCompression: .init(slidingWindow: .init(targetTokens: nil))
         )
     }
@@ -383,10 +387,14 @@ actor GeminiLiveClient {
             if let final = content.inputTranscription?.text, !final.isEmpty {
                 emit(.transcript(text: final, isFinal: true))
             }
-            if configuration.captionSource == .modelOutput,
-               let parts = content.modelTurn?.parts {
-                let text = parts.compactMap(\.text).joined()
-                if !text.isEmpty { emit(.modelText(text)) }
+            if configuration.captionSource == .modelOutput {
+                // 原生音频模型的文字来自 outputTranscription；少数模型仍可能直接给 text part，两者都收
+                if let spoken = content.outputTranscription?.text, !spoken.isEmpty {
+                    emit(.modelText(spoken))
+                } else if let parts = content.modelTurn?.parts {
+                    let text = parts.compactMap(\.text).joined()
+                    if !text.isEmpty { emit(.modelText(text)) }
+                }
             }
             if content.turnComplete == true {
                 emit(.turnComplete)

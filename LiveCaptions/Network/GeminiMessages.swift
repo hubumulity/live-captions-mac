@@ -14,6 +14,8 @@ struct GeminiClientMessage: Encodable, Sendable {
         var realtimeInputConfig: RealtimeInputConfig?
         var sessionResumption: SessionResumption?
         var inputAudioTranscription: AudioTranscriptionConfig?
+        /// 原生音频模型只能输出 AUDIO；开启后服务端会把模型语音转成文字一并下发
+        var outputAudioTranscription: AudioTranscriptionConfig?
         var contextWindowCompression: ContextWindowCompression?
     }
 
@@ -98,6 +100,7 @@ struct GeminiServerMessage: Decodable, Sendable {
         var generationComplete: Bool?
         var inputTranscription: Transcription?
         var interimInputTranscription: Transcription?
+        var outputTranscription: Transcription?
     }
 
     struct Content: Decodable, Sendable {
