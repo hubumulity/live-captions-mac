@@ -2,9 +2,11 @@ name: Build macOS app
 
 on:
   push:
-    # 同时声明 branches 与 tags：只写 tags 时 GitHub 会忽略分支推送
+    # master 每次提交 → autotag 自动打 patch+1 的 tag；
+    # tag 推送会再触发一次本 workflow（tags 事件），完成构建 + 发版。
+    # 只写 tags 时 GitHub 会忽略分支推送，所以 branches 与 tags 同时声明。
     branches:
-      - "**"
+      - "master"
     tags:
       - "v*"
     paths:
@@ -17,6 +19,37 @@ permissions:
   contents: write
 
 jobs:
+  # 每次 master 有代码提交，自动把最新 v* tag 的 patch 位 +1 并推送；
+  # 手动打的 tag 不受影响（照样走下面的 build + 发版）。
+  autotag:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: autotag-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+
+      - name: Bump patch version and push tag
+        run: |
+          set -euo pipefail
+          git fetch --tags origin
+          latest="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1 || true)"
+          if [[ "$latest" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((10#${BASH_REMATCH[3]} + 1))"
+          else
+            tag="v0.1.0"
+          fi
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "tag $tag already exists, skip"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="github-actions[bot]@users.noreply.github.com" tag "$tag"
+          git push origin "$tag" || { echo "tag push raced with another run, skip"; exit 0; }
+          echo "created $tag"
+
   build:
     runs-on: macos-15
     steps:
@@ -28,10 +61,20 @@ jobs:
       - name: Toolchain info
         run: swift --version && xcodebuild -version
 
+      - name: Determine bundle version
+        id: bundle_version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and package LiveCaptions.app (arm64)
         shell: bash
         env:
           ARCH: arm64
+          VERSION: ${{ steps.bundle_version.outputs.version }}
         run: chmod +x ci/build-app.sh && ci/build-app.sh
 
       - name: Upload build log
