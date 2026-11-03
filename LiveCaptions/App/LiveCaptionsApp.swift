@@ -16,12 +16,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static var onShowOverlay: (() -> Void)?
     /// 由 SwiftUI 侧（SettingsOpener）注入的开窗闭包
     static var openSettingsRequest: (() -> Void)?
+    /// 设置窗口打开状态（同步标志，防 openWindow 竞态双开）
+    private static var isSettingsWindowOpen = false
+    private static var lastSettingsOpenAt: Date?
 
     private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
         setupStatusItem()
+        // 监听设置窗口关闭，重置标志位
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: nil,
+            queue: .main
+        ) { note in
+            if let w = note.object as? NSWindow, w.title == "Live Captions 设置" {
+                Self.isSettingsWindowOpen = false
+            }
+        }
         NSApp.activate(ignoringOtherApps: true)
         Self.onLaunch?()
     }
@@ -62,11 +75,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func openSettingsWindow() {
-        // 已有设置窗口就只激活，不重复打开（dock 点击时系统可能已自动开了一个）
-        if !NSApp.windows.contains(where: { $0.title == "Live Captions 设置" }) {
-            Self.openSettingsRequest?()
+        let now = Date()
+        // 防抖：1 秒内的重复调用直接忽略（dock 点击时可能触发两次）
+        if let last = Self.lastSettingsOpenAt, now.timeIntervalSince(last) < 1.0 {
+            NSApp.activate(ignoringOtherApps: true)
+            return
         }
+        Self.lastSettingsOpenAt = now
+
+        // 同步标志 + NSApp.windows 双重检查，已有就不新建
+        if Self.isSettingsWindowOpen
+            || NSApp.windows.contains(where: { $0.title == "Live Captions 设置" })
+        {
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        Self.isSettingsWindowOpen = true
+        Self.openSettingsRequest?()
         NSApp.activate(ignoringOtherApps: true)
+
+        // 兜底：如果 1 秒后窗口仍没出现（openWindow 失败），重置标志位免得卡死
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            if !NSApp.windows.contains(where: { $0.title == "Live Captions 设置" }) {
+                Self.isSettingsWindowOpen = false
+            }
+        }
     }
 
     // MARK: - 状态栏菜单（原生 AppKit）
