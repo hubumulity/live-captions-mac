@@ -16,8 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static var onShowOverlay: (() -> Void)?
     /// 由 SwiftUI 侧（SettingsOpener）注入的开窗闭包
     static var openSettingsRequest: (() -> Void)?
-    /// 设置窗口打开状态（同步标志，防 openWindow 竞态双开）
-    private static var isSettingsWindowOpen = false
+    /// 设置窗口打开状态（同步标志，防 openWindow 竞态双开；由 onDisappear 重置）
+    static var isSettingsWindowOpen = false
     private static var lastSettingsOpenAt: Date?
 
     private var statusItem: NSStatusItem?
@@ -25,16 +25,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
         setupStatusItem()
-        // 监听设置窗口关闭，重置标志位
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification,
-            object: nil,
-            queue: .main
-        ) { @MainActor note in
-            if let w = note.object as? NSWindow, w.title == "Live Captions 设置" {
-                Self.isSettingsWindowOpen = false
-            }
-        }
         NSApp.activate(ignoringOtherApps: true)
         Self.onLaunch?()
     }
@@ -215,6 +205,9 @@ struct LiveCaptionsApp: App {
         WindowGroup("Live Captions 设置", id: "settings") {
             SettingsView(settings: settings, viewModel: viewModel)
                 .frame(width: 540, height: 640)
+                .onDisappear {
+                    AppDelegate.isSettingsWindowOpen = false
+                }
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
