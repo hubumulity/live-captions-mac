@@ -87,7 +87,7 @@ private struct StatusPill: View {
             Circle()
                 .fill(indicatorColor)
                 .frame(width: 8, height: 8)
-            Text(isRunning ? state.displayText : "字幕已停止 · 右键开始")
+            Text(isRunning ? state.displayText : "Live Captions 已就绪 · 点击菜单栏图标或右键此处开始")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.white.opacity(0.9))
         }
