@@ -3,8 +3,8 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'v0 App',
-  description: 'Created with v0',
+  title: 'Live Captions for macOS',
+  description: '基于 Gemini Live API 的 macOS 实时字幕应用源码概览',
   generator: 'v0.app',
   icons: {
     icon: [
@@ -39,8 +39,9 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en">
-      <body className="antialiased">
+    // suppressHydrationWarning：浏览器扩展（如 Dark Reader）会在 hydration 前向 html/body 注入属性
+    <html lang="zh-CN" suppressHydrationWarning>
+      <body className="antialiased" suppressHydrationWarning>
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
