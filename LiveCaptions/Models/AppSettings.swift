@@ -130,6 +130,11 @@ final class AppSettings {
         didSet { defaults.set(keepAliveIntervalSeconds, forKey: Keys.keepAliveInterval) }
     }
 
+    /// 整句字幕说完后在屏幕上停留的秒数，到期自动消失
+    var captionLifetimeSeconds: Double {
+        didSet { defaults.set(captionLifetimeSeconds, forKey: Keys.captionLifetime) }
+    }
+
     var translationEnabled: Bool {
         didSet { defaults.set(translationEnabled, forKey: Keys.translationEnabled) }
     }
@@ -173,6 +178,7 @@ final class AppSettings {
         modelName = GeminiLiveModel.shutDown.contains(storedModel) ? GeminiLiveModel.recommended : storedModel
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 28
         keepAliveIntervalSeconds = defaults.object(forKey: Keys.keepAliveInterval) as? Double ?? 10
+        captionLifetimeSeconds = defaults.object(forKey: Keys.captionLifetime) as? Double ?? 8
         translationEnabled = defaults.object(forKey: Keys.translationEnabled) as? Bool ?? true
         targetLanguage = TargetLanguage(rawValue: defaults.string(forKey: Keys.targetLanguage) ?? "") ?? .simplifiedChinese
         translationModel = defaults.string(forKey: Keys.translationModel) ?? GeminiTextModel.recommended
@@ -181,6 +187,7 @@ final class AppSettings {
     }
 
     private enum Keys {
+        static let captionLifetime = "settings.captionLifetime"
         static let translationEnabled = "settings.translationEnabled"
         static let targetLanguage = "settings.targetLanguage"
         static let translationModel = "settings.translationModel"

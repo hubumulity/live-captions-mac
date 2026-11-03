@@ -120,6 +120,11 @@ struct SettingsView: View {
                     .frame(width: 200)
                 }
 
+                LabeledContent("字幕停留时间：\(Int(settings.captionLifetimeSeconds)) 秒") {
+                    Slider(value: $settings.captionLifetimeSeconds, in: 3...30, step: 1)
+                        .frame(width: 200)
+                }
+
                 LabeledContent("字号：\(Int(settings.fontSize))") {
                     Slider(value: $settings.fontSize, in: 16...48, step: 1)
                         .frame(width: 200)

@@ -86,10 +86,14 @@ private struct CaptionLine: View {
                     .lineLimit(1)
                     .truncationMode(.head)
             }
+            // 正在识别的句子可能很长：保留最新的词、从开头截断，像实时字幕一样“滚动”；
+            // 已完成的句子给足 4 行空间，避免整句被省略号吞掉。
             Text(primaryText)
                 .font(.system(size: fontSize, weight: .semibold, design: .rounded))
                 .foregroundStyle(isAwaitingTranslation ? .white.opacity(0.85) : .white)
-                .lineLimit(2)
+                .lineLimit(caption.isFinal ? 4 : 3)
+                .truncationMode(caption.isFinal ? .tail : .head)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .multilineTextAlignment(.leading)
         .padding(.horizontal, 16)

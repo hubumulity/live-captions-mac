@@ -33,6 +33,8 @@ final class CaptionViewModel {
     private var lastInterimTranslatedText = ""
     /// 最近几句已完成的原文，作为翻译上下文
     private var recentOriginals: [String] = []
+    /// 每条已完成字幕的自动消失定时任务
+    private var expiryTasks: [UUID: Task<Void, Never>] = [:]
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -130,6 +132,8 @@ final class CaptionViewModel {
         captions.removeAll()
         activeCaptionID = nil
         committedText = ""
+        expiryTasks.values.forEach { $0.cancel() }
+        expiryTasks.removeAll()
         translationSequence.removeAll()
         recentOriginals.removeAll()
         lastInterimTranslatedText = ""
@@ -205,10 +209,24 @@ final class CaptionViewModel {
             requestTranslation(for: id, text: original, isPartial: false)
             recentOriginals.append(original)
             if recentOriginals.count > 3 { recentOriginals.removeFirst() }
+            scheduleExpiry(for: id)
         }
         activeCaptionID = nil
         committedText = ""
         lastInterimTranslatedText = ""
+    }
+
+    /// 整句结束后开始计时，到期自动从屏幕移除；期间若被新字幕挤出则一并清理定时任务
+    private func scheduleExpiry(for id: UUID) {
+        expiryTasks[id]?.cancel()
+        let lifetime = settings.captionLifetimeSeconds
+        expiryTasks[id] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(lifetime))
+            guard let self, !Task.isCancelled else { return }
+            self.expiryTasks[id] = nil
+            self.translationSequence[id] = nil
+            self.captions.removeAll { $0.id == id && $0.isFinal }
+        }
     }
 
     // MARK: - 翻译
@@ -265,8 +283,12 @@ final class CaptionViewModel {
 
     private func trimToMaxLines() {
         let overflow = captions.count - settings.maxCaptionLines
-        if overflow > 0 {
-            captions.removeFirst(overflow)
+        guard overflow > 0 else { return }
+        for removed in captions.prefix(overflow) {
+            expiryTasks[removed.id]?.cancel()
+            expiryTasks[removed.id] = nil
+            translationSequence[removed.id] = nil
         }
+        captions.removeFirst(overflow)
     }
 }
