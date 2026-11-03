@@ -6,7 +6,7 @@ import SwiftUI
 ///
 /// 菜单栏用原生 NSStatusItem + NSMenu（AppKit），不用 SwiftUI MenuBarExtra——
 /// 后者在无主窗口的应用里点开 popover 时有概率无响应，原生菜单最稳。
-/// 设置窗口用 SwiftUI Window（单例）+ openWindow 打开（官方路径，不自己托管 NSWindow，
+/// 设置窗口用 SwiftUI WindowGroup + openWindow 打开（官方路径，不自己托管 NSWindow，
 /// 之前自建 NSWindow 托管 NSHostingView/NSHostingController 在部分机器上 EXC_BAD_ACCESS）。
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -56,8 +56,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - 设置窗口（SwiftUI WindowGroup 官方路径）
 
+    /// 关掉设置窗口不退出应用（防御：最后一个窗口关闭也不终止）
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
     @objc func openSettingsWindow() {
-        Self.openSettingsRequest?()
+        // 已有设置窗口就只激活，不重复打开（dock 点击时系统可能已自动开了一个）
+        if !NSApp.windows.contains(where: { $0.title == "Live Captions 设置" }) {
+            Self.openSettingsRequest?()
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -169,8 +177,8 @@ struct LiveCaptionsApp: App {
     }
 
     var body: some Scene {
-        // 用 Window（单例）而不用 WindowGroup：openWindow 重复调用只会聚焦已存在的窗口，不会开出两个
-        Window("Live Captions 设置", id: "settings") {
+        // WindowGroup + open 前检查 NSApp.windows 是否已有，避免 dock 点击时系统自动开一个、手动又开一个
+        WindowGroup("Live Captions 设置", id: "settings") {
             SettingsView(settings: settings, viewModel: viewModel)
                 .frame(width: 540, height: 640)
         }
