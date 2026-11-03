@@ -111,7 +111,12 @@ final class CaptionViewModel {
 
             audioTask = Task.detached(priority: .userInitiated) {
                 // SpeechGate 非 Sendable，在此 Task 内独占使用
-                let gate = SpeechGate()
+                // 翻译模式用更宽松的配置：预滚 250ms（减少延迟、短句不易被吞），
+                // 语气词/喘息仍由频谱启发式过滤
+                let gateConfig: SpeechGate.Config = liveTranslationTarget != nil
+                    ? .init(minSpeechMs: 250)
+                    : .init()
+                let gate = SpeechGate(config: gateConfig)
                 for await frame in frames {
                     for event in gate.process(frame) {
                         await client.send(event)

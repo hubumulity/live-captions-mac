@@ -124,24 +124,25 @@ struct LiveCaptionsApp: App {
         }
     }
 
-    /// 打开设置窗口并强制置于最前（SwiftUI Settings 窗口有时会被压在浏览器后面）。
+    /// 打开设置窗口并强制置于最前。SwiftUI Settings 窗口创建有延迟，轮询最多 2 秒，
+    /// 找到后立即顶到最前（避免被浏览器压住）。
     @MainActor
     private static func openSettingsWindow() {
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         NSApp.activate(ignoringOtherApps: true)
-        // 给 SwiftUI 一点时间创建窗口，然后把设置窗口顶到最前
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            for window in NSApp.windows where window.isVisible && !(window is NSPanel) {
-                window.level = .floating
-                window.orderFrontRegardless()
-                window.makeKey()
-                // 用完即恢复普通层级，避免一直压住别的窗口
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    if window.level == .floating {
-                        window.level = .normal
-                    }
+        Task { @MainActor in
+            let deadline = ContinuousClock.now + .seconds(2)
+            while ContinuousClock.now < deadline {
+                if let win = NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) }) {
+                    win.orderFrontRegardless()
+                    win.makeKeyAndOrderFront(nil)
+                    return
                 }
+                try? await Task.sleep(for: .milliseconds(100))
             }
+            // 2 秒还没找到：再发一次 action 兜底
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
