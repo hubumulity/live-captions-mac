@@ -38,5 +38,6 @@ ZIP="$DIST/LiveCaptions-macOS15-$ARCH.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
 echo "==> done"
+find "$APP" -type f
 ls -la "$DIST"
 file "$APP/Contents/MacOS/LiveCaptions"
