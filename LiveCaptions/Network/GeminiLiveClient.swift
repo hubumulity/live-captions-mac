@@ -58,6 +58,8 @@ actor GeminiLiveClient {
     /// 当前是否处于一次“用户活动”（已发送 activityStart 但尚未 activityEnd）
     private var activityOpen = false
     private var lastOutboundAt = ContinuousClock.now
+    /// 最近一次收到转写（原文/译文任一）的时间，用于停滞检测
+    private var lastTranscriptAt = ContinuousClock.now
 
     init(configuration: Configuration) {
         self.configuration = configuration
@@ -383,23 +385,29 @@ actor GeminiLiveClient {
         }
 
         if let content = message.serverContent {
+            var gotTranscript = false
             if isLiveTranslateMode {
                 // 翻译模型：inputTranscription = 原文增量，outputTranscription = 译文增量
                 // （Mimi 同款：两者都按增量/累积重发处理，不读 interimInputTranscription 避免重复）
                 if let source = content.inputTranscription?.text, !source.isEmpty {
                     emit(.transcriptDelta(source))
+                    gotTranscript = true
                 }
                 if let translated = content.outputTranscription?.text, !translated.isEmpty {
                     emit(.translationDelta(translated))
+                    gotTranscript = true
                 }
             } else {
                 if let interim = content.interimInputTranscription?.text, !interim.isEmpty {
                     emit(.transcript(text: interim, isFinal: false))
+                    gotTranscript = true
                 }
                 if let final = content.inputTranscription?.text, !final.isEmpty {
                     emit(.transcript(text: final, isFinal: true))
+                    gotTranscript = true
                 }
             }
+            if gotTranscript { lastTranscriptAt = .now }
             // generationComplete 同样视为 turn 边界（与 turnComplete 一起定稿）
             if content.turnComplete == true || content.generationComplete == true {
                 emit(.turnComplete)
@@ -443,6 +451,16 @@ actor GeminiLiveClient {
                     mimeType: "audio/pcm;rate=\(Int(AudioConstants.sampleRate))",
                     data: silence.base64EncodedString()
                 )))
+            }
+
+            // 3. 转写停滞检测：有音频持续发出（用户在说话）但 20s 无任何转写，
+            //    说明模型侧卡住（Ping 成功只证明链路通，不代表模型在干活）。
+            //    主动重连比等 30s 超时更快恢复。
+            if isSetupComplete,
+               ContinuousClock.now - lastTranscriptAt >= .seconds(20),
+               ContinuousClock.now - lastOutboundAt < .seconds(20) {
+                await handleDisconnect(reason: "转写停滞超过 20 秒，正在重连")
+                return
             }
         }
     }
