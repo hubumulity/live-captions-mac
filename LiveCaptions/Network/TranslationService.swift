@@ -23,8 +23,9 @@ actor TranslationService {
 
     private let configuration: Configuration
     private let session: URLSession
-    /// 部分模型不接受 thinkingConfig；首次被拒后记住，之后不再携带
-    private var thinkingConfigSupported = true
+    /// 某些模型会拒绝 systemInstruction / generationConfig 中的字段（HTTP 400 invalid argument）。
+    /// 一旦遇到就切换为“最简请求体”：把指令并入用户消息，不带任何 generationConfig。
+    private var useMinimalRequest = false
 
     init(configuration: Configuration) {
         self.configuration = configuration
@@ -47,9 +48,8 @@ actor TranslationService {
             attempt += 1
             do {
                 return try await request(text: trimmed, context: context, isPartial: isPartial)
-            } catch TranslationError.http(let code, let body)
-                where code == 400 && thinkingConfigSupported && body.localizedCaseInsensitiveContains("thinking") {
-                thinkingConfigSupported = false
+            } catch TranslationError.http(let code, _) where code == 400 && !useMinimalRequest {
+                useMinimalRequest = true
                 continue
             } catch TranslationError.http(let code, _) where (code == 429 || code >= 500) && attempt == 1 {
                 try await Task.sleep(for: .milliseconds(400))
@@ -84,19 +84,21 @@ actor TranslationService {
         }
         userText += "当前句：\n" + text
 
-        var generationConfig: [String: Any] = [
-            "temperature": 0.2,
-            "maxOutputTokens": 512,
-        ]
-        if thinkingConfigSupported {
-            generationConfig["thinkingConfig"] = ["thinkingBudget": 0]
+        let body: [String: Any]
+        if useMinimalRequest {
+            body = [
+                "contents": [["role": "user", "parts": [["text": system + "\n\n" + userText]]]],
+            ]
+        } else {
+            body = [
+                "systemInstruction": ["parts": [["text": system]]],
+                "contents": [["role": "user", "parts": [["text": userText]]]],
+                "generationConfig": [
+                    "temperature": 0.2,
+                    "maxOutputTokens": 512,
+                ],
+            ]
         }
-
-        let body: [String: Any] = [
-            "systemInstruction": ["parts": [["text": system]]],
-            "contents": [["role": "user", "parts": [["text": userText]]]],
-            "generationConfig": generationConfig,
-        ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: req)

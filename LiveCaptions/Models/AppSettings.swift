@@ -64,6 +64,23 @@ enum TargetLanguage: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// 翻译的实现方式
+enum TranslationMode: String, CaseIterable, Identifiable, Sendable {
+    /// 转写模型听写原文 + 文本模型翻译，可显示双语
+    case pipeline
+    /// 通用 Live 模型按 system prompt 直接输出译文，单模型、无原文
+    case liveDirect
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .pipeline: "两段式：转写 + 翻译（推荐，可双语）"
+        case .liveDirect: "Live 模型直接输出译文（单模型）"
+        }
+    }
+}
+
 /// 翻译用的文本模型。见 https://ai.google.dev/gemini-api/docs/models
 enum GeminiTextModel {
     static let recommended = "gemini-3.5-flash-lite"
@@ -79,6 +96,8 @@ enum GeminiTextModel {
 enum GeminiLiveModel {
     /// 专用低延迟语音转写模型，字幕场景首选
     static let recommended = "gemini-3.5-transcribe-live"
+    /// 通用对话型 Live 模型，用于“直接输出译文”模式
+    static let generalPurpose = "gemini-3.8-live"
 
     static let presets: [(id: String, label: String)] = [
         (recommended, "Gemini 3.5 Transcribe Live（推荐，专用转写）"),
@@ -143,6 +162,15 @@ final class AppSettings {
         didSet { defaults.set(targetLanguage.rawValue, forKey: Keys.targetLanguage) }
     }
 
+    var translationMode: TranslationMode {
+        didSet { defaults.set(translationMode.rawValue, forKey: Keys.translationMode) }
+    }
+
+    /// 两段式翻译且开启时才有“原文 + 译文”可显示
+    var usesPipelineTranslation: Bool {
+        translationEnabled && translationMode == .pipeline
+    }
+
     var translationModel: String {
         didSet { defaults.set(translationModel, forKey: Keys.translationModel) }
     }
@@ -181,6 +209,7 @@ final class AppSettings {
         captionLifetimeSeconds = defaults.object(forKey: Keys.captionLifetime) as? Double ?? 8
         translationEnabled = defaults.object(forKey: Keys.translationEnabled) as? Bool ?? true
         targetLanguage = TargetLanguage(rawValue: defaults.string(forKey: Keys.targetLanguage) ?? "") ?? .simplifiedChinese
+        translationMode = TranslationMode(rawValue: defaults.string(forKey: Keys.translationMode) ?? "") ?? .pipeline
         translationModel = defaults.string(forKey: Keys.translationModel) ?? GeminiTextModel.recommended
         showOriginalText = defaults.object(forKey: Keys.showOriginalText) as? Bool ?? true
         apiKey = (try? KeychainStore.load(account: keychainAccount)) ?? ""
@@ -190,6 +219,7 @@ final class AppSettings {
         static let captionLifetime = "settings.captionLifetime"
         static let translationEnabled = "settings.translationEnabled"
         static let targetLanguage = "settings.targetLanguage"
+        static let translationMode = "settings.translationMode"
         static let translationModel = "settings.translationModel"
         static let showOriginalText = "settings.showOriginalText"
         static let maxCaptionLines = "settings.maxCaptionLines"

@@ -89,22 +89,38 @@ struct SettingsView: View {
                 }
                 .disabled(!settings.translationEnabled || viewModel.isRunning)
 
-                Picker("翻译模型", selection: $settings.translationModel) {
-                    ForEach(GeminiTextModel.presets, id: \.id) { preset in
-                        Text(preset.label).tag(preset.id)
-                    }
-                    if !GeminiTextModel.presets.contains(where: { $0.id == settings.translationModel }) {
-                        Text("自定义：\(settings.translationModel)").tag(settings.translationModel)
+                Picker("翻译方式", selection: $settings.translationMode) {
+                    ForEach(TranslationMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
                     }
                 }
+                .pickerStyle(.radioGroup)
                 .disabled(!settings.translationEnabled || viewModel.isRunning)
 
-                Toggle("同时显示原文（双语字幕）", isOn: $settings.showOriginalText)
-                    .disabled(!settings.translationEnabled)
+                switch settings.translationMode {
+                case .pipeline:
+                    Picker("翻译模型", selection: $settings.translationModel) {
+                        ForEach(GeminiTextModel.presets, id: \.id) { preset in
+                            Text(preset.label).tag(preset.id)
+                        }
+                        if !GeminiTextModel.presets.contains(where: { $0.id == settings.translationModel }) {
+                            Text("自定义：\(settings.translationModel)").tag(settings.translationModel)
+                        }
+                    }
+                    .disabled(!settings.translationEnabled || viewModel.isRunning)
 
-                Text("转写模型负责听写原文，翻译模型并行把每句译成目标语言。说话过程中会先显示半句的预览译文，整句结束后替换为完整译文。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    Toggle("同时显示原文（双语字幕）", isOn: $settings.showOriginalText)
+                        .disabled(!settings.translationEnabled)
+
+                    Text("转写模型逐字听写原文，文本模型并行翻译。原文准确、可双语显示；说话中先出半句预览译文，整句结束后替换为完整译文。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                case .liveDirect:
+                    Text("由通用 Live 模型（\(GeminiLiveModel.generalPurpose)）听音频后直接输出译文，只走一条连接、无原文。译文按整句出，偶尔会“回答”而不是翻译；若上方选择了专用转写模型，会自动改用通用模型。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("字幕显示") {

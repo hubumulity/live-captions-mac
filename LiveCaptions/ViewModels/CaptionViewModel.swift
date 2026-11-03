@@ -54,16 +54,28 @@ final class CaptionViewModel {
             return
         }
 
+        let directTranslation = settings.translationEnabled && settings.translationMode == .liveDirect
+        var liveModel = settings.modelName
+        var captionSource = settings.captionSource
+        if directTranslation {
+            // 直出模式必须由通用 Live 模型生成文本；专用转写模型不会翻译
+            if GeminiLiveModel.isTranscribeModel(liveModel) {
+                liveModel = GeminiLiveModel.generalPurpose
+            }
+            captionSource = .modelOutput
+        }
+
         let client = GeminiLiveClient(configuration: .init(
             apiKey: settings.apiKey,
-            model: settings.modelName,
-            captionSource: settings.captionSource,
-            keepAliveInterval: .seconds(settings.keepAliveIntervalSeconds)
+            model: liveModel,
+            captionSource: captionSource,
+            keepAliveInterval: .seconds(settings.keepAliveIntervalSeconds),
+            directTranslationTarget: directTranslation ? settings.targetLanguage.promptName : nil
         ))
         self.client = client
-        finalizesOnFinalTranscript = GeminiLiveModel.isTranscribeModel(settings.modelName)
+        finalizesOnFinalTranscript = GeminiLiveModel.isTranscribeModel(liveModel)
 
-        translator = settings.translationEnabled
+        translator = settings.usesPipelineTranslation
             ? TranslationService(configuration: .init(
                 apiKey: settings.apiKey,
                 model: settings.translationModel,
