@@ -31,8 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             object: nil,
             queue: .main
         ) { note in
-            if let w = note.object as? NSWindow, w.title == "Live Captions 设置" {
-                Self.isSettingsWindowOpen = false
+            // queue 是 .main，必在主线程上，可直接 assumeIsolated
+            MainActor.assumeIsolated {
+                if let w = note.object as? NSWindow, w.title == "Live Captions 设置" {
+                    Self.isSettingsWindowOpen = false
+                }
             }
         }
         NSApp.activate(ignoringOtherApps: true)
