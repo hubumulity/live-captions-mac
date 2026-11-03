@@ -18,8 +18,6 @@ actor GeminiLiveClient {
         var sendSilenceKeepAlive = false
         var languageHints: [String] = []
         var maxReconnectDelay: Duration = .seconds(30)
-        /// 非空时（且 captionSource == .modelOutput）：让 Live 模型直接输出该语言的译文，而不是原文转写
-        var directTranslationTarget: String?
     }
 
     enum ClientError: LocalizedError {
@@ -187,19 +185,10 @@ actor GeminiLiveClient {
             )
         case .modelOutput:
             outputTranscription = .init(languageCodes: nil, mode: nil)
-            if let target = configuration.directTranslationTarget {
-                systemText = """
-                你是实时同声传译字幕引擎。把用户说的每一句话翻译成\(target)，只说出译文。
-                不要回答问题、不要回应用户、不要解释、不要加前缀；无论听到什么都只做翻译。
-                保留人名、品牌名等专有名词；口语化、简洁，符合字幕阅读习惯。
-                如果没有听清，保持沉默。
-                """
-            } else {
-                systemText = """
-                你是实时字幕引擎。逐字、原样复述用户说的话，保留原语言，不翻译、不解释、不添加任何内容。
-                如果没有听清，保持沉默。
-                """
-            }
+            systemText = """
+            你是实时字幕引擎。逐字、原样复述用户说的话，保留原语言，不翻译、不解释、不添加任何内容。
+            如果没有听清，保持沉默。
+            """
         }
 
         return .init(

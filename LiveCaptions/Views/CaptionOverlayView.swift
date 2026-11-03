@@ -13,7 +13,7 @@ struct CaptionOverlayView: View {
                 CaptionLine(
                     caption: caption,
                     fontSize: settings.fontSize,
-                    translationEnabled: settings.usesPipelineTranslation,
+                    translationEnabled: settings.translationEnabled,
                     showOriginal: settings.showOriginalText,
                     opacity: lineOpacity(index: index, total: viewModel.captions.count)
                 )
