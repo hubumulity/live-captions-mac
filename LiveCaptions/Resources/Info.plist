@@ -32,9 +32,7 @@
 	<true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
-	<!-- 菜单栏常驻应用，不在 Dock 显示 -->
-	<key>LSUIElement</key>
-	<true/>
+	<!-- 普通应用：在 Dock 显示，可右键退出、Cmd+Q、Cmd+Tab 切换 -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Live Captions 需要访问麦克风以生成实时字幕。</string>
 	<key>NSAudioCaptureUsageDescription</key>

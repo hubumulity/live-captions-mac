@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// 应用是菜单栏常驻工具（LSUIElement），启动时没有 Dock 图标和主窗口。
-/// 为避免用户以为“点了没反应”，启动后立刻显示字幕浮窗；若尚未配置 API Key 则同时打开设置窗口。
+/// 普通 Dock 应用（无主窗口）。启动后立刻显示字幕浮窗；
+/// 若尚未配置 API Key 则同时打开设置窗口。
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static var onLaunch: (() -> Void)?
@@ -52,8 +52,8 @@ struct LiveCaptionsApp: App {
     }
 
     var body: some Scene {
-        // 菜单栏常驻入口：开始/停止、打开设置、退出
-        MenuBarExtra("Live Captions", systemImage: viewModel.isRunning ? "captions.bubble.fill" : "captions.bubble") {
+        // 菜单栏入口：开始/停止、打开设置、退出（图标固定为静态，避免动态切换导致点击无响应）
+        MenuBarExtra("Live Captions", systemImage: "captions.bubble") {
             MenuContentView(viewModel: viewModel, settings: settings) {
                 showOverlay()
             }
