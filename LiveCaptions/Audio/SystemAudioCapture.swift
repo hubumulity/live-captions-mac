@@ -1,5 +1,6 @@
 import AVFoundation
-import ScreenCaptureKit
+// ScreenCaptureKit 的类型尚未标注 Sendable，用 @preconcurrency 消除跨隔离域传递 SCShareableContent 的错误
+@preconcurrency import ScreenCaptureKit
 
 /// 使用 ScreenCaptureKit 采集系统播放音频（macOS 13+，需要“屏幕录制”权限）。
 /// 仅开启音频输出，视频配置为最小尺寸以降低开销。
