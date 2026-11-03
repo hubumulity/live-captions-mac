@@ -58,19 +58,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @objc func openSettingsWindow() {
         if settingsWindow == nil {
             guard let settings = Self.settings, let viewModel = Self.viewModel else { return }
-            // Form 在 NSHostingController 里没有内在尺寸，必须给固定 frame，否则内容会被压扁
-            let hostingView = NSHostingView(
+            // NSHostingController（v0.2.10 验证过不崩溃）+ 固定 frame（解决 Form 无内在尺寸被压扁）
+            let hosting = NSHostingController(
                 rootView: SettingsView(settings: settings, viewModel: viewModel)
                     .frame(width: 540, height: 640)
             )
-            hostingView.frame = NSRect(x: 0, y: 0, width: 540, height: 640)
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 540, height: 640),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false
             )
-            window.contentView = hostingView
+            window.contentViewController = hosting
             window.title = "Live Captions 设置"
             window.center()
             window.delegate = self
