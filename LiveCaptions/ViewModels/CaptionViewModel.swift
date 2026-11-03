@@ -59,7 +59,7 @@ final class CaptionViewModel {
 
             eventTask = Task { [weak self] in
                 for await event in client.events {
-                    await self?.handle(event)
+                    self?.handle(event)
                 }
             }
 

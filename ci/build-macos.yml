@@ -4,15 +4,18 @@ on:
   push:
     paths:
       - "LiveCaptions/**"
+      - "ci/**"
       - ".github/workflows/build-macos.yml"
+    tags:
+      - "v*"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: macos-15
-    defaults:
-      run:
-        working-directory: LiveCaptions
     steps:
       - uses: actions/checkout@v4
 
@@ -22,19 +25,27 @@ jobs:
       - name: Toolchain info
         run: swift --version && xcodebuild -version
 
-      - name: Build (release, Swift 6 strict concurrency)
+      - name: Build and package LiveCaptions.app (arm64)
         shell: bash
-        run: swift build -c release 2>&1 | tee build.log
+        env:
+          ARCH: arm64
+        run: chmod +x ci/build-app.sh && ci/build-app.sh
 
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: LiveCaptions/build.log
+          path: build.log
 
-      - name: Upload binary
+      - name: Upload app bundle
         uses: actions/upload-artifact@v4
         with:
-          name: LiveCaptions-binary
-          path: LiveCaptions/.build/release/LiveCaptions
+          name: LiveCaptions-macOS15-arm64
+          path: dist/LiveCaptions-macOS15-arm64.zip
+
+      - name: Publish GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/LiveCaptions-macOS15-arm64.zip --title "Live Captions ${GITHUB_REF_NAME}" --generate-notes
