@@ -6,16 +6,18 @@ import SwiftUI
 ///
 /// 菜单栏用原生 NSStatusItem + NSMenu（AppKit），不用 SwiftUI MenuBarExtra——
 /// 后者在无主窗口的应用里点开 popover 时有概率无响应，原生菜单最稳。
-/// 设置窗口也是自建 NSWindow（不走 SwiftUI Settings scene 的 sendAction，那条路不可靠）。
+/// 设置窗口用 SwiftUI WindowGroup(id:) + openWindow 打开（官方路径，不自己托管 NSWindow，
+/// 之前自建 NSWindow 托管 NSHostingView/NSHostingController 在部分机器上 EXC_BAD_ACCESS）。
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static var onLaunch: (() -> Void)?
     static var viewModel: CaptionViewModel?
     static var settings: AppSettings?
     static var onShowOverlay: (() -> Void)?
+    /// 由 SwiftUI 侧（SettingsOpener）注入的开窗闭包
+    static var openSettingsRequest: (() -> Void)?
 
     private var statusItem: NSStatusItem?
-    private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
@@ -52,38 +54,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         NSApp.mainMenu = mainMenu
     }
 
-    // MARK: - 设置窗口（自建 NSWindow，确定性打开）
+    // MARK: - 设置窗口（SwiftUI WindowGroup 官方路径）
 
-    /// 打开设置窗口：自建 NSWindow，直接 makeKeyAndOrderFront，不依赖 SwiftUI Settings scene。
     @objc func openSettingsWindow() {
-        if settingsWindow == nil {
-            guard let settings = Self.settings, let viewModel = Self.viewModel else { return }
-            // NSHostingController（v0.2.10 验证过不崩溃）+ 固定 frame（解决 Form 无内在尺寸被压扁）
-            let hosting = NSHostingController(
-                rootView: SettingsView(settings: settings, viewModel: viewModel)
-                    .frame(width: 540, height: 640)
-            )
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 540, height: 640),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            window.contentViewController = hosting
-            window.title = "Live Captions 设置"
-            window.center()
-            window.delegate = self
-            settingsWindow = window
-        }
+        Self.openSettingsRequest?()
         NSApp.activate(ignoringOtherApps: true)
-        settingsWindow?.makeKeyAndOrderFront(nil)
-        settingsWindow?.orderFrontRegardless()
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        if (notification.object as? NSWindow) == settingsWindow {
-            settingsWindow = nil
-        }
     }
 
     // MARK: - 状态栏菜单（原生 AppKit）
@@ -149,6 +124,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 }
 
+/// 注入 openWindow 的透明辅助视图，挂在常驻浮窗上（浮窗启动即显示，保证闭包可用）。
+private struct SettingsOpener: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear.onAppear {
+            AppDelegate.openSettingsRequest = { openWindow(id: "settings") }
+        }
+    }
+}
+
 @main
 struct LiveCaptionsApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -164,6 +150,7 @@ struct LiveCaptionsApp: App {
 
         let controller = OverlayPanelController(
             rootView: CaptionOverlayView(viewModel: viewModel, settings: settings)
+                .background(SettingsOpener())
         )
         _overlayController = State(initialValue: controller)
 
@@ -173,16 +160,20 @@ struct LiveCaptionsApp: App {
         AppDelegate.onLaunch = {
             controller.show()
             if settings.apiKey.isEmpty {
-                (NSApp.delegate as? AppDelegate)?.openSettingsWindow()
+                // 等 SettingsOpener 注入 openWindow 后再开
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    (NSApp.delegate as? AppDelegate)?.openSettingsWindow()
+                }
             }
         }
     }
 
     var body: some Scene {
-        // 占位 Scene（SwiftUI App 要求至少一个 Scene）。
-        // 设置走 AppDelegate 自建的 NSWindow；主菜单由 AppDelegate 接管 Cmd+,。
-        Settings {
-            EmptyView()
+        WindowGroup("Live Captions 设置", id: "settings") {
+            SettingsView(settings: settings, viewModel: viewModel)
+                .frame(width: 540, height: 640)
         }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 }
