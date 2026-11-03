@@ -113,6 +113,14 @@ final class CaptionViewModel {
         switch event {
         case .connectionState(let state):
             connectionState = state
+            // 客户端判定为不可恢复（模型不存在、API Key 无效等）：停止采集，但保留失败原因供用户查看
+            if case .failed(let reason) = state, isRunning {
+                Task { [weak self] in
+                    await self?.stop()
+                    self?.lastError = reason
+                    self?.connectionState = .failed(reason)
+                }
+            }
 
         case .transcript(let text, let isFinal):
             if isFinal {

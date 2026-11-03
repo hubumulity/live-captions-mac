@@ -51,8 +51,25 @@ struct SettingsView: View {
                     }
                 }
 
-                TextField("模型名称", text: $settings.modelName)
+                Picker("模型", selection: $settings.modelName) {
+                    ForEach(GeminiLiveModel.presets, id: \.id) { preset in
+                        Text(preset.label).tag(preset.id)
+                    }
+                    if !GeminiLiveModel.presets.contains(where: { $0.id == settings.modelName }) {
+                        Text("自定义：\(settings.modelName)").tag(settings.modelName)
+                    }
+                }
+                .disabled(viewModel.isRunning)
+
+                TextField("自定义模型 ID", text: $settings.modelName)
                     .textFieldStyle(.roundedBorder)
+                    .disabled(viewModel.isRunning)
+
+                if GeminiLiveModel.shutDown.contains(settings.modelName) {
+                    Text("该模型已被 Google 关停，连接会被拒绝。请选择 \(GeminiLiveModel.recommended)。")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
 
                 Picker("字幕来源", selection: $settings.captionSource) {
                     ForEach(CaptionSource.allCases) { source in

@@ -32,6 +32,30 @@ enum CaptionSource: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// 可选的 Live API 模型。见 https://ai.google.dev/gemini-api/docs/models
+enum GeminiLiveModel {
+    /// 专用低延迟语音转写模型，字幕场景首选
+    static let recommended = "gemini-3.5-transcribe-live"
+
+    static let presets: [(id: String, label: String)] = [
+        (recommended, "Gemini 3.5 Transcribe Live（推荐，专用转写）"),
+        ("gemini-3.8-live", "Gemini 3.8 Live（通用语音模型）"),
+        ("gemini-3.1-flash-live-preview", "Gemini 3.1 Flash Live Preview（2026-11-17 停用）"),
+        ("gemini-2.5-flash-native-audio-preview-12-2025", "Gemini 2.5 Flash Native Audio（仅限老项目）"),
+    ]
+
+    /// 已被 Google 关停的模型：连接会被服务端直接拒绝
+    static let shutDown: Set<String> = [
+        "gemini-live-2.5-flash-preview",
+        "gemini-2.0-flash-live-001",
+    ]
+
+    /// 专用转写模型不接受 systemInstruction / 手动活动信号，仅需 inputAudioTranscription
+    static func isTranscribeModel(_ model: String) -> Bool {
+        model.contains("transcribe")
+    }
+}
+
 /// 应用配置。普通配置落在 UserDefaults，API Key 走 Keychain。
 @MainActor
 @Observable
@@ -84,7 +108,9 @@ final class AppSettings {
         maxCaptionLines = defaults.object(forKey: Keys.maxCaptionLines) as? Int ?? 3
         audioSource = AudioSource(rawValue: defaults.string(forKey: Keys.audioSource) ?? "") ?? .microphone
         captionSource = CaptionSource(rawValue: defaults.string(forKey: Keys.captionSource) ?? "") ?? .inputTranscription
-        modelName = defaults.string(forKey: Keys.modelName) ?? "gemini-live-2.5-flash-preview"
+        let storedModel = defaults.string(forKey: Keys.modelName) ?? GeminiLiveModel.recommended
+        // 旧版本把已关停的模型写进了 UserDefaults，启动时自动迁移到推荐模型
+        modelName = GeminiLiveModel.shutDown.contains(storedModel) ? GeminiLiveModel.recommended : storedModel
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 28
         keepAliveIntervalSeconds = defaults.object(forKey: Keys.keepAliveInterval) as? Double ?? 10
         apiKey = (try? KeychainStore.load(account: keychainAccount)) ?? ""

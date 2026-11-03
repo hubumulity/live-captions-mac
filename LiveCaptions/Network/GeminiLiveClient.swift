@@ -90,6 +90,7 @@ actor GeminiLiveClient {
         switch event {
         case .speechStart:
             activityOpen = true
+            guard !usesTranscribeModel else { return }
             await sendRealtime(.init(activityStart: .init()))
         case .audio(let data):
             await sendRealtime(.init(audio: .init(
@@ -98,6 +99,7 @@ actor GeminiLiveClient {
             )))
         case .speechEnd:
             activityOpen = false
+            guard !usesTranscribeModel else { return }
             await sendRealtime(.init(activityEnd: .init()))
         }
     }
@@ -144,7 +146,28 @@ actor GeminiLiveClient {
         }
     }
 
+    /// 专用转写模型（gemini-3.5-transcribe-live）走精简配置：
+    /// 只要 responseModalities=TEXT + inputAudioTranscription，使用服务端 VAD，不发送 activityStart/End。
+    private var usesTranscribeModel: Bool {
+        GeminiLiveModel.isTranscribeModel(configuration.model)
+    }
+
     private func makeSetup() -> GeminiClientMessage.Setup {
+        if usesTranscribeModel {
+            return .init(
+                model: "models/\(configuration.model)",
+                generationConfig: .init(responseModalities: ["TEXT"], temperature: nil, maxOutputTokens: nil),
+                systemInstruction: nil,
+                realtimeInputConfig: nil,
+                sessionResumption: .init(handle: resumptionHandle),
+                inputAudioTranscription: .init(
+                    languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
+                    mode: "VERBATIM"
+                ),
+                contextWindowCompression: nil
+            )
+        }
+
         let systemText: String
         var maxOutputTokens: Int?
         var inputTranscription: GeminiClientMessage.AudioTranscriptionConfig?
@@ -243,10 +266,76 @@ actor GeminiLiveClient {
                 handleServerMessage(data)
             } catch {
                 guard socket === task else { return }
-                await handleDisconnect(reason: "连接中断：\(error.localizedDescription)")
+                let diagnosis = Self.diagnose(task: task, error: error)
+                if diagnosis.isFatal {
+                    await failPermanently(reason: diagnosis.message)
+                } else {
+                    await handleDisconnect(reason: "连接中断：\(diagnosis.message)")
+                }
                 return
             }
         }
+    }
+
+    private struct Diagnosis {
+        var message: String
+        var isFatal: Bool
+    }
+
+    /// 把 WebSocket 关闭码 / HTTP 握手状态码翻译成用户可读的原因，并判断是否值得重连。
+    /// Gemini 在 setup 无效（模型不存在、字段错误）时返回 1007/1008 并附带说明；
+    /// API Key 无效在握手阶段就返回 HTTP 4xx。这些重试也不会成功，直接报错比无限“重连中”更有用。
+    private static func diagnose(task: URLSessionWebSocketTask, error: Error) -> Diagnosis {
+        if let http = task.response as? HTTPURLResponse, !(200...299).contains(http.statusCode), http.statusCode != 101 {
+            let hint: String
+            switch http.statusCode {
+            case 400, 401, 403: hint = "API Key 无效或没有权限"
+            case 404: hint = "接口或模型不存在"
+            case 429: hint = "请求过于频繁 / 配额用尽"
+            default: hint = "服务端返回 HTTP \(http.statusCode)"
+            }
+            return Diagnosis(message: "\(hint)（HTTP \(http.statusCode)）", isFatal: http.statusCode != 429 && http.statusCode < 500)
+        }
+
+        let code = task.closeCode
+        let serverReason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) }?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        switch code {
+        case .invalidFramePayloadData, .policyViolation, .unsupportedData, .protocolError:
+            let detail = serverReason.isEmpty ? "服务端拒绝了 setup 配置" : serverReason
+            if serverReason.localizedCaseInsensitiveContains("not found")
+                || serverReason.localizedCaseInsensitiveContains("not supported") {
+                return Diagnosis(message: "模型不可用：\(detail)。请在设置中改用 \(GeminiLiveModel.recommended)", isFatal: true)
+            }
+            if serverReason.localizedCaseInsensitiveContains("api key")
+                || serverReason.localizedCaseInsensitiveContains("permission") {
+                return Diagnosis(message: "鉴权失败：\(detail)", isFatal: true)
+            }
+            return Diagnosis(message: "参数被拒绝（\(code.rawValue)）：\(detail)", isFatal: true)
+        case .internalServerError, .goingAway, .abnormalClosure, .normalClosure:
+            let detail = serverReason.isEmpty ? error.localizedDescription : serverReason
+            return Diagnosis(message: "\(detail)（关闭码 \(code.rawValue)）", isFatal: false)
+        default:
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain,
+               nsError.code == NSURLErrorNotConnectedToInternet || nsError.code == NSURLErrorCannotFindHost
+                || nsError.code == NSURLErrorCannotConnectToHost || nsError.code == NSURLErrorTimedOut {
+                return Diagnosis(message: "无法连接 generativelanguage.googleapis.com，请检查网络或代理", isFatal: false)
+            }
+            let detail = serverReason.isEmpty ? error.localizedDescription : serverReason
+            return Diagnosis(message: detail, isFatal: false)
+        }
+    }
+
+    /// 不可恢复的错误：停止重连，向上层报告 failed 状态。
+    private func failPermanently(reason: String) async {
+        shouldRun = false
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        await tearDownSocket(closeCode: .normalClosure)
+        emit(.error(reason))
+        emit(.connectionState(.failed(reason)))
     }
 
     private func handleServerMessage(_ data: Data) {
@@ -258,7 +347,7 @@ actor GeminiLiveClient {
             emit(.connectionState(.connected))
 
             // 重连前正处于讲话中：补发 activityStart，保证片段语义完整
-            if activityOpen {
+            if activityOpen, !usesTranscribeModel {
                 Task { await sendRealtime(.init(activityStart: .init())) }
             }
             return
