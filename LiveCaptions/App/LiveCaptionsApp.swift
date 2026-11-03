@@ -6,16 +6,19 @@ import SwiftUI
 ///
 /// 菜单栏用原生 NSStatusItem + NSMenu（AppKit），不用 SwiftUI MenuBarExtra——
 /// 后者在无主窗口的应用里点开 popover 时有概率无响应，原生菜单最稳。
+/// 设置窗口也是自建 NSWindow（不走 SwiftUI Settings scene 的 sendAction，那条路不可靠）。
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     static var onLaunch: (() -> Void)?
     static var viewModel: CaptionViewModel?
+    static var settings: AppSettings?
     static var onShowOverlay: (() -> Void)?
-    static var onOpenSettings: (() -> Void)?
 
     private var statusItem: NSStatusItem?
+    private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setupMainMenu()
         setupStatusItem()
         NSApp.activate(ignoringOtherApps: true)
         Self.onLaunch?()
@@ -24,8 +27,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         // 点击 Dock 图标：确保浮窗可见，并打开设置界面
         Self.onShowOverlay?()
-        Self.onOpenSettings?()
+        openSettingsWindow()
         return true
+    }
+
+    // MARK: - 主菜单（Cmd+, 设置 / Cmd+Q 退出）
+
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        let prefs = NSMenuItem(title: "设置…", action: #selector(openSettingsWindow), keyEquivalent: ",")
+        prefs.target = self
+        appMenu.addItem(prefs)
+        appMenu.addItem(.separator())
+        let quit = NSMenuItem(
+            title: "退出 Live Captions",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        appMenu.addItem(quit)
+        appItem.submenu = appMenu
+        mainMenu.addItem(appItem)
+        NSApp.mainMenu = mainMenu
+    }
+
+    // MARK: - 设置窗口（自建 NSWindow，确定性打开）
+
+    /// 打开设置窗口：自建 NSWindow，直接 makeKeyAndOrderFront，不依赖 SwiftUI Settings scene。
+    @objc func openSettingsWindow() {
+        if settingsWindow == nil {
+            guard let settings = Self.settings, let viewModel = Self.viewModel else { return }
+            let hosting = NSHostingController(
+                rootView: SettingsView(settings: settings, viewModel: viewModel)
+            )
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 540, height: 640),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentViewController = hosting
+            window.title = "Live Captions 设置"
+            window.center()
+            window.delegate = self
+            settingsWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        settingsWindow?.orderFrontRegardless()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if (notification.object as? NSWindow) == settingsWindow {
+            settingsWindow = nil
+        }
     }
 
     // MARK: - 状态栏菜单（原生 AppKit）
@@ -67,13 +123,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
-        let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
+        let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettingsWindow), keyEquivalent: "")
         settingsItem.target = self
         menu.addItem(settingsItem)
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(title: "退出", action: #selector(quitApp), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "退出", action: #selector(quitApp), keyEquivalent: "")
         quit.target = self
         menu.addItem(quit)
     }
@@ -84,10 +140,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func showOverlay() {
         Self.onShowOverlay?()
-    }
-
-    @objc private func openSettings() {
-        Self.onOpenSettings?()
     }
 
     @objc private func quitApp() {
@@ -114,41 +166,21 @@ struct LiveCaptionsApp: App {
         _overlayController = State(initialValue: controller)
 
         AppDelegate.viewModel = viewModel
+        AppDelegate.settings = settings
         AppDelegate.onShowOverlay = { controller.show() }
-        AppDelegate.onOpenSettings = { Self.openSettingsWindow() }
         AppDelegate.onLaunch = {
             controller.show()
             if settings.apiKey.isEmpty {
-                Self.openSettingsWindow()
+                (NSApp.delegate as? AppDelegate)?.openSettingsWindow()
             }
-        }
-    }
-
-    /// 打开设置窗口并强制置于最前。SwiftUI Settings 窗口创建有延迟，轮询最多 2 秒，
-    /// 找到后立即顶到最前（避免被浏览器压住）。
-    @MainActor
-    private static func openSettingsWindow() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-        NSApp.activate(ignoringOtherApps: true)
-        Task { @MainActor in
-            let deadline = ContinuousClock.now + .seconds(2)
-            while ContinuousClock.now < deadline {
-                if let win = NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) }) {
-                    win.orderFrontRegardless()
-                    win.makeKeyAndOrderFront(nil)
-                    return
-                }
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            // 2 秒还没找到：再发一次 action 兜底
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
     var body: some Scene {
+        // 占位 Scene（SwiftUI App 要求至少一个 Scene）。
+        // 设置走 AppDelegate 自建的 NSWindow；主菜单由 AppDelegate 接管 Cmd+,。
         Settings {
-            SettingsView(settings: settings, viewModel: viewModel)
+            EmptyView()
         }
     }
 }
