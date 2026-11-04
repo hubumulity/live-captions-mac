@@ -127,7 +127,7 @@ final class AppSettings {
 
     init() {
         maxCaptionLines = defaults.object(forKey: Keys.maxCaptionLines) as? Int ?? 3
-        audioSource = AudioSource(rawValue: defaults.string(forKey: Keys.audioSource) ?? "") ?? .microphone
+        audioSource = AudioSource(rawValue: defaults.string(forKey: Keys.audioSource) ?? "") ?? .systemAudio
         let storedModel = defaults.string(forKey: Keys.modelName) ?? GeminiLiveModel.recommended
         // 旧版本把已关停的模型写进了 UserDefaults，启动时自动迁移到推荐模型
         modelName = GeminiLiveModel.shutDown.contains(storedModel) ? GeminiLiveModel.recommended : storedModel

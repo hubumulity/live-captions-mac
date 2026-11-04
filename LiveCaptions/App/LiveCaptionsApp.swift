@@ -71,10 +71,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         guard let settings = Self.settings, let viewModel = Self.viewModel else { return }
 
         // 注意：不要用 .frame(width:height:) 固定尺寸，会导致 EXC_BAD_ACCESS；
-        // 用 maxWidth/maxHeight: .infinity 让 SwiftUI 内容填充窗口（窗口尺寸由 contentRect 决定）。
+        // Form 内部是 ScrollView，必须提供最小尺寸，否则 intrinsic height 可能趋近于零。
         let hosting = NSHostingController(
             rootView: SettingsView(settings: settings, viewModel: viewModel)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: 520, minHeight: 640, maxWidth: .infinity, maxHeight: .infinity)
         )
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 540, height: 640),

@@ -109,13 +109,38 @@ final class CaptionViewModel {
                 }
             }
 
+            let isSystemAudio = settings.audioSource == .systemAudio
+            let bypassSpeechGate = isSystemAudio
+                && (liveTranslationTarget != nil || GeminiLiveModel.isTranscribeModel(settings.modelName))
             audioTask = Task.detached(priority: .userInitiated) {
+                if bypassSpeechGate {
+                    // 转写和 Live 翻译模型都使用服务端分句，不需要本地 VAD。
+                    // 系统音频是干净媒体流，直接转发可避免丢失日语单音节短词。
+                    for await frame in frames {
+                        await client.send(.audio(frame.pcmData))
+                    }
+                    return
+                }
+
                 // SpeechGate 非 Sendable，在此 Task 内独占使用
-                // 翻译模式用更宽松的配置：预滚 250ms（减少延迟、短句不易被吞），
-                // 语气词/喘息仍由频谱启发式过滤
-                let gateConfig: SpeechGate.Config = liveTranslationTarget != nil
-                    ? .init(minSpeechMs: 250)
-                    : .init()
+                let gateConfig: SpeechGate.Config
+                if isSystemAudio {
+                    // 系统音频通常是干净的媒体音轨；不要用麦克风场景的
+                    // “至少两个音节”启发式误杀はい/うん/そう/ね等短词。
+                    gateConfig = .init(
+                        minSpeechMs: liveTranslationTarget != nil ? 100 : 150,
+                        maxHoldMs: 500,
+                        minCentroidStd: 0,
+                        minZcrStd: 0,
+                        maxMeanFlatness: 1,
+                        minSyllables: 1,
+                        acceptActiveSegment: true
+                    )
+                } else {
+                    gateConfig = liveTranslationTarget != nil
+                        ? .init(minSpeechMs: 250)
+                        : .init()
+                }
                 let gate = SpeechGate(config: gateConfig)
                 for await frame in frames {
                     for event in gate.process(frame) {
@@ -152,6 +177,8 @@ final class CaptionViewModel {
         settleLoopTask?.cancel()
         settleLoopTask = nil
         finalizeActiveCaption()
+        expiryTasks.values.forEach { $0.cancel() }
+        expiryTasks.removeAll()
         resetTurnState()
         connectionState = .idle
     }

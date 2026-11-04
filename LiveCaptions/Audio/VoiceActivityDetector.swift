@@ -127,7 +127,10 @@ struct VoiceActivityDetector: Sendable {
     mutating func process(_ features: FrameFeatures) -> Bool {
         if warmupFrames > 0 {
             warmupFrames -= 1
-            noiseFloorDb = min(noiseFloorDb, features.energyDb)
+            // 噪声底应收敛到实际输入，而不是从 -60 dB 继续向下收敛。
+            // 使用平滑平均，避免预热阶段的单个突发帧完全决定阈值。
+            let rate: Float = warmupFrames == 24 ? 1 : 0.1
+            noiseFloorDb += (features.energyDb - noiseFloorDb) * rate
             return false
         }
 

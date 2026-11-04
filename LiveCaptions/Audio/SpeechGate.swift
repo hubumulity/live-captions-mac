@@ -35,6 +35,8 @@ final class SpeechGate {
         var maxMeanFlatness: Float = 0.45
         /// 最少音节数（能量峰数）
         var minSyllables = 2
+        /// 干净的系统音频不应因短词或音节峰值不足而被过滤。
+        var acceptActiveSegment = false
     }
 
     private let config: Config
@@ -122,6 +124,7 @@ final class SpeechGate {
 
     private func isLikelySpeech(_ features: [FrameFeatures]) -> Bool {
         guard features.count >= 2 else { return false }
+        if config.acceptActiveSegment { return true }
 
         let meanFlatness = features.map(\.spectralFlatness).mean
         // 喘息、气声、呻吟：噪声化，平坦度高

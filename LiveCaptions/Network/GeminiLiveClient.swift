@@ -54,6 +54,9 @@ actor GeminiLiveClient {
     private var isSetupComplete = false
     private var reconnectAttempt = 0
     private var resumptionHandle: String?
+    /// setupComplete 前到达的音频不能丢弃，否则启动后的第一句话会被截断。
+    private var pendingRealtimeInputs: [GeminiClientMessage.RealtimeInput] = []
+    private let maxPendingRealtimeInputs = 300
 
     /// 当前是否处于一次“用户活动”（已发送 activityStart 但尚未 activityEnd）
     private var activityOpen = false
@@ -282,7 +285,7 @@ actor GeminiLiveClient {
                 case .string(let s): data = Data(s.utf8)
                 @unknown default: continue
                 }
-                handleServerMessage(data)
+                await handleServerMessage(data)
             } catch {
                 guard socket === task else { return }
                 let diagnosis = Self.diagnose(task: task, error: error)
@@ -357,16 +360,24 @@ actor GeminiLiveClient {
         emit(.connectionState(.failed(reason)))
     }
 
-    private func handleServerMessage(_ data: Data) {
-        guard let message = try? decoder.decode(GeminiServerMessage.self, from: data) else { return }
+    private func handleServerMessage(_ data: Data) async {
+        guard let message = try? decoder.decode(GeminiServerMessage.self, from: data) else {
+            emit(.error("无法解析服务端消息，连接可能已失效"))
+            return
+        }
 
         if message.setupComplete != nil {
             isSetupComplete = true
             reconnectAttempt = 0
             emit(.connectionState(.connected))
+            let pending = pendingRealtimeInputs
+            pendingRealtimeInputs.removeAll(keepingCapacity: true)
+            for input in pending {
+                await sendRealtime(input)
+            }
 
             // 重连前正处于讲话中：补发 activityStart，保证片段语义完整
-            if activityOpen, !usesTranscribeModel, !isLiveTranslateMode {
+            if pending.isEmpty, activityOpen, !usesTranscribeModel, !isLiveTranslateMode {
                 Task { await sendRealtime(.init(activityStart: .init())) }
             }
             return
@@ -468,7 +479,13 @@ actor GeminiLiveClient {
     // MARK: - 发送
 
     private func sendRealtime(_ input: GeminiClientMessage.RealtimeInput) async {
-        guard isSetupComplete else { return } // 未完成握手时丢弃，重连后由 activityOpen 补发边界
+        guard isSetupComplete else {
+            if pendingRealtimeInputs.count >= maxPendingRealtimeInputs {
+                pendingRealtimeInputs.removeFirst()
+            }
+            pendingRealtimeInputs.append(input)
+            return
+        }
         do {
             try await sendJSON(GeminiClientMessage(realtimeInput: input))
             lastOutboundAt = .now
