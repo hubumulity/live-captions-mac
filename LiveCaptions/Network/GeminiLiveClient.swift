@@ -369,6 +369,10 @@ actor GeminiLiveClient {
         if message.setupComplete != nil {
             isSetupComplete = true
             reconnectAttempt = 0
+            // 这些时间戳属于当前 WebSocket 会话。若沿用旧连接的时间，
+            // 新连接建立后可能因旧会话的 20 秒停滞计时立即再次重连。
+            lastTranscriptAt = .now
+            lastOutboundAt = .now
             emit(.connectionState(.connected))
             let pending = pendingRealtimeInputs
             pendingRealtimeInputs.removeAll(keepingCapacity: true)
