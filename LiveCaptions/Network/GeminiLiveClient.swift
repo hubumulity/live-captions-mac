@@ -67,6 +67,7 @@ actor GeminiLiveClient {
         * MemoryLayout<Int16>.size
         / 10
     private var lastOutboundAt = ContinuousClock.now
+    private var lastTranscriptAt = ContinuousClock.now
 
     init(configuration: Configuration) {
         self.configuration = configuration
@@ -385,6 +386,7 @@ actor GeminiLiveClient {
         if message.setupComplete != nil {
             isSetupComplete = true
             reconnectAttempt = 0
+            lastTranscriptAt = .now
             lastOutboundAt = .now
             emit(.connectionState(.connected))
             let pending = pendingRealtimeInputs
@@ -429,6 +431,11 @@ actor GeminiLiveClient {
                 if let final = content.inputTranscription?.text, !final.isEmpty {
                     emit(.transcript(text: final, isFinal: true))
                 }
+            }
+            if content.inputTranscription?.text.isEmpty == false
+                || content.outputTranscription?.text.isEmpty == false
+                || content.interimInputTranscription?.text.isEmpty == false {
+                lastTranscriptAt = .now
             }
             // generationComplete 同样视为 turn 边界（与 turnComplete 一起定稿）
             if content.turnComplete == true || content.generationComplete == true {
@@ -475,10 +482,24 @@ actor GeminiLiveClient {
                 )))
             }
 
-            // Do not tear down a healthy socket just because transcription is
-            // temporarily quiet. Gemini can pause output while processing a
-            // long turn, and Ping/Pong already verifies the transport.
+            // Ping only proves that the WebSocket transport is alive. If audio
+            // is still being sent but Gemini has produced no transcript for a
+            // prolonged period, rotate this session before its audio backlog
+            // becomes visible as delayed captions.
+            if isSetupComplete,
+               (activityOpen || isLiveTranslateMode),
+               ContinuousClock.now - lastTranscriptAt >= .seconds(20),
+               ContinuousClock.now - lastOutboundAt < .seconds(20) {
+                await recoverFromStalledTranscription()
+                return
+            }
         }
+    }
+
+    private func recoverFromStalledTranscription() async {
+        pendingRealtimeInputs.removeAll(keepingCapacity: true)
+        audioAccumulator.removeAll(keepingCapacity: true)
+        await handleDisconnect(reason: "转写停滞超过 20 秒，正在恢复连接")
     }
 
     // MARK: - 发送
