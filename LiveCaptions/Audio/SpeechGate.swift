@@ -37,11 +37,15 @@ final class SpeechGate {
         var minSyllables = 2
         /// 干净的系统音频不应因短词或音节峰值不足而被过滤。
         var acceptActiveSegment = false
+        /// VAD 参数，允许系统音频使用更严格的静音判定。
+        var energyMarginDb: Float = 9
+        var absoluteFloorDb: Float = -55
+        var hangoverFrames: Int = 15
     }
 
     private let config: Config
     private let extractor = FrameFeatureExtractor()
-    private var vad = VoiceActivityDetector()
+    private var vad: VoiceActivityDetector
 
     private enum State {
         case silence
@@ -57,6 +61,11 @@ final class SpeechGate {
 
     init(config: Config = Config()) {
         self.config = config
+        self.vad = VoiceActivityDetector(config: .init(
+            energyMarginDb: config.energyMarginDb,
+            absoluteFloorDb: config.absoluteFloorDb,
+            hangoverFrames: config.hangoverFrames
+        ))
     }
 
     /// 处理一帧音频，返回需要向网络层发送的事件（可能为空）。

@@ -131,9 +131,12 @@ final class CaptionViewModel {
                         maxHoldMs: 500,
                         minCentroidStd: 0,
                         minZcrStd: 0,
-                        maxMeanFlatness: 1,
+                        maxMeanFlatness: 0.8,
                         minSyllables: 1,
-                        acceptActiveSegment: true
+                        acceptActiveSegment: true,
+                        energyMarginDb: 12,
+                        absoluteFloorDb: -48,
+                        hangoverFrames: 5
                     )
                 } else {
                     gateConfig = liveTranslationTarget != nil
