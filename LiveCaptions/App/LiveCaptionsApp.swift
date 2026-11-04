@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
+    private var settingsHostingController: NSViewController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
@@ -89,6 +90,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         // 设置窗口是应用级单例。关闭按钮只隐藏窗口，避免 AppKit 在
         // windowWillClose 回调期间释放 NSHostingController/SwiftUI 树。
         window.isReleasedWhenClosed = false
+        // 不让 NSWindow 的默认 close action 触发宿主树销毁；关闭按钮只隐藏窗口。
+        if let closeButton = window.standardWindowButton(.closeButton) {
+            closeButton.target = self
+            closeButton.action = #selector(hideSettingsWindow)
+        }
+        settingsHostingController = hosting
         settingsWindow = window
 
         NSApp.activate(ignoringOtherApps: true)
@@ -97,8 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func windowShouldClose(_ window: NSWindow) -> Bool {
         guard window === settingsWindow else { return true }
-        window.orderOut(nil)
+        hideSettingsWindow()
         return false
+    }
+
+    @objc private func hideSettingsWindow() {
+        settingsWindow?.orderOut(nil)
     }
 
     // MARK: - 状态栏菜单（原生 AppKit）
