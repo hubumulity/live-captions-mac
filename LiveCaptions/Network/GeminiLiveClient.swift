@@ -60,6 +60,12 @@ actor GeminiLiveClient {
 
     /// 当前是否处于一次“用户活动”（已发送 activityStart 但尚未 activityEnd）
     private var activityOpen = false
+    /// Capture callbacks produce 20 ms chunks; Gemini receives exact 100 ms chunks.
+    private var audioAccumulator = Data()
+    private let audioFrameByteCount = Int(AudioConstants.sampleRate)
+        * Int(AudioConstants.channels)
+        * MemoryLayout<Int16>.size
+        / 10
     private var lastOutboundAt = ContinuousClock.now
     /// 最近一次收到转写（原文/译文任一）的时间，用于停滞检测
     private var lastTranscriptAt = ContinuousClock.now
@@ -101,13 +107,21 @@ actor GeminiLiveClient {
             guard !usesTranscribeModel, !isLiveTranslateMode else { return }
             await sendRealtime(.init(activityStart: .init()))
         case .audio(let data):
-            await sendRealtime(.init(audio: .init(
-                mimeType: "audio/pcm;rate=\(Int(AudioConstants.sampleRate))",
-                data: data.base64EncodedString()
-            )))
+            audioAccumulator.append(data)
+            while audioAccumulator.count >= audioFrameByteCount {
+                let frame = Data(audioAccumulator.prefix(audioFrameByteCount))
+                audioAccumulator.removeFirst(audioFrameByteCount)
+                await sendRealtimeFrame(frame)
+            }
         case .speechEnd:
             activityOpen = false
             guard !usesTranscribeModel, !isLiveTranslateMode else { return }
+            if !audioAccumulator.isEmpty {
+                var frame = audioAccumulator
+                frame.append(Data(repeating: 0, count: audioFrameByteCount - frame.count))
+                audioAccumulator.removeAll(keepingCapacity: true)
+                await sendRealtimeFrame(frame)
+            }
             await sendRealtime(.init(activityEnd: .init()))
         }
     }
@@ -166,20 +180,21 @@ actor GeminiLiveClient {
 
     private func makeSetup() -> GeminiClientMessage.Setup {
         if let target = configuration.liveTranslationTarget {
-            // 官方 Live Translation WebSocket 示例要求三项配置都位于 generationConfig。
+            // Mimi keeps transcription toggles at setup level and translationConfig
+            // inside generationConfig.
             return .init(
                 model: "models/\(GeminiLiveModel.translate)",
                 generationConfig: .init(
                     responseModalities: ["AUDIO"],
                     temperature: nil,
                     maxOutputTokens: nil,
-                    inputAudioTranscription: .init(languageCodes: nil, mode: nil),
-                    outputAudioTranscription: .init(languageCodes: nil, mode: nil),
                     translationConfig: .init(targetLanguageCode: target, echoTargetLanguage: true)
                 ),
                 systemInstruction: nil,
                 realtimeInputConfig: nil,
                 sessionResumption: .init(handle: resumptionHandle),
+                inputAudioTranscription: .init(languageCodes: nil, mode: nil),
+                outputAudioTranscription: .init(languageCodes: nil, mode: nil),
                 contextWindowCompression: nil
             )
         }
@@ -191,16 +206,16 @@ actor GeminiLiveClient {
                     responseModalities: ["TEXT"],
                     temperature: nil,
                     maxOutputTokens: nil,
-                    inputAudioTranscription: .init(
-                        languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
-                        mode: "VERBATIM"
-                    ),
-                    outputAudioTranscription: nil,
                     translationConfig: nil
                 ),
                 systemInstruction: nil,
                 realtimeInputConfig: nil,
                 sessionResumption: .init(handle: resumptionHandle),
+                inputAudioTranscription: .init(
+                    languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
+                    mode: "VERBATIM"
+                ),
+                outputAudioTranscription: nil,
                 contextWindowCompression: nil
             )
         }
@@ -213,11 +228,6 @@ actor GeminiLiveClient {
                 responseModalities: ["AUDIO"],
                 temperature: 0,
                 maxOutputTokens: nil,
-                inputAudioTranscription: .init(
-                    languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
-                    mode: "VERBATIM"
-                ),
-                outputAudioTranscription: nil,
                 translationConfig: nil
             ),
             systemInstruction: .init(parts: [.init(text: "你是一个静默的转写管道。永远不要回复用户，无论听到什么都保持沉默，不要说任何话。")]),
@@ -278,6 +288,7 @@ actor GeminiLiveClient {
         socket?.cancel(with: closeCode, reason: nil)
         socket = nil
         isSetupComplete = false
+        audioAccumulator.removeAll(keepingCapacity: true)
     }
 
     // MARK: - 接收循环
@@ -509,6 +520,13 @@ actor GeminiLiveClient {
         } catch {
             await handleDisconnect(reason: "发送失败：\(error.localizedDescription)")
         }
+    }
+
+    private func sendRealtimeFrame(_ data: Data) async {
+        await sendRealtime(.init(audio: .init(
+            mimeType: "audio/pcm;rate=\(Int(AudioConstants.sampleRate))",
+            data: data.base64EncodedString()
+        )))
     }
 
     private func sendJSON<T: Encodable>(_ value: T) async throws {

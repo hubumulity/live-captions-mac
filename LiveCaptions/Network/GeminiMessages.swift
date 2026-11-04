@@ -13,6 +13,8 @@ struct GeminiClientMessage: Encodable, Sendable {
         var systemInstruction: Content?
         var realtimeInputConfig: RealtimeInputConfig?
         var sessionResumption: SessionResumption?
+        var inputAudioTranscription: AudioTranscriptionConfig?
+        var outputAudioTranscription: AudioTranscriptionConfig?
         var contextWindowCompression: ContextWindowCompression?
     }
 
@@ -20,14 +22,12 @@ struct GeminiClientMessage: Encodable, Sendable {
         var responseModalities: [String]
         var temperature: Double?
         var maxOutputTokens: Int?
-        /// Live API 的音频转写与翻译配置属于 generationConfig。
-        var inputAudioTranscription: AudioTranscriptionConfig?
-        var outputAudioTranscription: AudioTranscriptionConfig?
+        /// Live 翻译专用配置属于 generationConfig。
         var translationConfig: TranslationConfig?
     }
 
     /// Live 翻译配置（gemini-3.5-live-translate-preview）。
-    /// 音频转写和翻译配置都属于 generationConfig。
+    /// 音频转写开关位于 setup 顶层，translationConfig 位于 generationConfig。
     struct TranslationConfig: Encodable, Sendable {
         var targetLanguageCode: String
         var echoTargetLanguage: Bool

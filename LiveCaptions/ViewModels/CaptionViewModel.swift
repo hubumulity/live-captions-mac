@@ -25,11 +25,8 @@ final class CaptionViewModel {
 
     // MARK: - Live 翻译 turn 状态（Mimi turn 提交语义的 Swift 简化版）
     //
-    // 分句三路（任一触发即定稿，保证一句一行）：
-    //  1. turnComplete（模型明确分句）+ 源音频流 500ms 静默 → 定稿；
-    //  2. 无 turnComplete 时源音频流静默 2s → 定稿（模型没分句时的兜底）；
-    //  3. 单 turn 超过 15s → 强制定稿（连续说话不停时的兜底）。
-    // 注意：静默只看源音频流——译文由译文语音转写而来，滞后源音频 2~4s，不能作为分句依据。
+    // Both transcript lanes participate in settling. Translation can lag the
+    // source by several seconds, so settling on source-only silence truncates it.
     /// 当前 turn 累积的原文（未定稿部分）
     private var sourceAcc = ""
     /// 已定稿原文前缀：turnComplete 缺失时模型可能跨分句边界累积重发，剥离该前缀防重复
@@ -37,10 +34,7 @@ final class CaptionViewModel {
     /// 当前 turn 累积的译文（transAccOwner 标识属于哪个 turn）
     private var transAcc = ""
     private var transAccOwner: UUID?
-    /// 上一次译文增量的到达时间：两次增量间隔大说明是两个 turn 的翻译（模型逐句生成译文语音）
-    private var lastTransDeltaAt: ContinuousClock.Instant?
-
-    private var lastSourceDeltaAt: ContinuousClock.Instant?
+    private var lastTranscriptDeltaAt: ContinuousClock.Instant?
     private var turnStartAt: ContinuousClock.Instant?
     private var explicitTurn = false
     /// 最近定稿的行（供迟到译文更新）
@@ -53,9 +47,6 @@ final class CaptionViewModel {
     private static let transcriptQuiet: Duration = .seconds(2)
     /// 单 turn 最长持续时间，兜底分句
     private static let maxTurnDuration: Duration = .seconds(15)
-    /// 译文增量间隔超过这么久，视为上个 turn 的翻译已结束、新 turn 的翻译开始
-    /// （模型逐句生成译文语音，句内增量密集、句间有停顿）
-    private static let translationBurstGap: Duration = .milliseconds(1500)
     /// 定稿超过这么久的行不再接受迟到译文
     private static let lateTranslationWindow: Duration = .seconds(10)
     private static let settleTick: Duration = .milliseconds(200)
@@ -203,8 +194,7 @@ final class CaptionViewModel {
         sourceStrippingPrefix = ""
         transAcc = ""
         transAccOwner = nil
-        lastTransDeltaAt = nil
-        lastSourceDeltaAt = nil
+        lastTranscriptDeltaAt = nil
         turnStartAt = nil
         explicitTurn = false
     }
@@ -241,9 +231,13 @@ final class CaptionViewModel {
             guard !delta.isEmpty else { return }
             let now = ContinuousClock.now
             if turnStartAt == nil { turnStartAt = now }
-            lastSourceDeltaAt = now
+            lastTranscriptDeltaAt = now
             if mergeSourceChunk(delta) {
                 upsertActiveCaption(text: sourceAcc, isFinal: false)
+                if transAccOwner == nil, !transAcc.isEmpty {
+                    transAccOwner = activeCaptionID
+                    upsertActiveTranslation(transAcc)
+                }
             }
 
         case .translationDelta(let delta):
@@ -290,32 +284,30 @@ final class CaptionViewModel {
     private func routeTranslationDelta(_ delta: String) {
         guard !delta.isEmpty else { return }
         let now = ContinuousClock.now
-        let burstContinues = lastTransDeltaAt.map { now - $0 < Self.translationBurstGap } ?? false
-        lastTransDeltaAt = now
+        if turnStartAt == nil { turnStartAt = now }
+        lastTranscriptDeltaAt = now
 
         if let activeID = activeCaptionID {
-            if transAccOwner == activeID {
-                // 当前 turn 的翻译延续：合并并实时显示
-                if let merged = Self.mergeChunk(transAcc, delta) {
-                    transAcc = merged
-                    upsertActiveTranslation(merged)
-                }
-            } else if burstContinues,
-                      let last = lastFinalized, now - last.at < Self.lateTranslationWindow {
-                // burst 延续但累积器属于上个 turn：迟到尾巴，更新已定稿行，不污染新 turn
-                updateCaptionTranslationWithDelta(last.id, delta)
-            } else {
-                // 新 burst：当前 turn 的翻译开始
+            if transAccOwner != activeID {
                 transAcc = ""
                 transAccOwner = activeID
-                if let merged = Self.mergeChunk(transAcc, delta) {
-                    transAcc = merged
-                    upsertActiveTranslation(merged)
-                }
+            }
+            if let merged = Self.mergeChunk(transAcc, delta) {
+                transAcc = merged
+                upsertActiveTranslation(merged)
+            }
+        } else if !sourceAcc.isEmpty {
+            upsertActiveCaption(text: sourceAcc, isFinal: false)
+            transAccOwner = activeCaptionID
+            if let merged = Self.mergeChunk(transAcc, delta) {
+                transAcc = merged
+                upsertActiveTranslation(merged)
             }
         } else if let last = lastFinalized, now - last.at < Self.lateTranslationWindow {
-            // 无进行中 turn：迟到尾巴直接更新最后定稿的行
             updateCaptionTranslationWithDelta(last.id, delta)
+        } else if let merged = Self.mergeChunk(transAcc, delta) {
+            // Translation may precede its source; retain it until source arrives.
+            transAcc = merged
         }
     }
 
@@ -340,21 +332,19 @@ final class CaptionViewModel {
         }
     }
 
-    /// 三路分句（任一触发即定稿）：
-    /// 1. turnComplete + 源音频静默 500ms；2. 无 turnComplete 但源音频静默 2s；
-    /// 3. 单 turn 超过 15s 兜底。静默只看源音频流（译文滞后，不能作为分句依据）。
+    /// Mimi-style settling waits for both transcript lanes to become quiet.
     private func checkSettle() {
         guard isRunning, activeCaptionID != nil,
-              let start = turnStartAt, let last = lastSourceDeltaAt
+              let start = turnStartAt, let last = lastTranscriptDeltaAt
         else { return }
         let now = ContinuousClock.now
-        let sourceQuiet = now - last
-        if explicitTurn, sourceQuiet >= Self.turnTailQuiet {
-            // 模型明确分句：累积器清零（模型知道边界，后续增量是全新的）
+        let transcriptQuiet = now - last
+        if explicitTurn, transcriptQuiet >= Self.turnTailQuiet {
+            // 模型明确分句：累积器清零，后续增量属于新 turn。
             finalizeActiveCaption()
-        } else if !explicitTurn, sourceQuiet >= Self.transcriptQuiet,
+        } else if !explicitTurn, transcriptQuiet >= Self.transcriptQuiet,
                   !sourceAcc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            // 模型没分句但说话停了：定稿；模型不知道边界，记下前缀防累积重发
+            // 模型没分句但转写停了：记下前缀防累积重发。
             finalizeActiveCaption(forQuietCheckpoint: true)
         } else if now - start >= Self.maxTurnDuration {
             finalizeActiveCaption()
@@ -402,7 +392,7 @@ final class CaptionViewModel {
         }
         activeCaptionID = nil
         committedText = ""
-        lastSourceDeltaAt = nil
+        lastTranscriptDeltaAt = nil
         turnStartAt = nil
         explicitTurn = false
         transAcc = ""
