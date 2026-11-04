@@ -74,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         // Form 内部是 ScrollView，必须提供最小尺寸，否则 intrinsic height 可能趋近于零。
         let hosting = NSHostingController(
             rootView: SettingsView(settings: settings, viewModel: viewModel)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, minWidth: 520, minHeight: 640)
+                .frame(minWidth: 520, maxWidth: .infinity, minHeight: 640, maxHeight: .infinity)
         )
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 540, height: 640),
