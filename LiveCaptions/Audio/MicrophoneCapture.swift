@@ -28,7 +28,7 @@ actor MicrophoneCapture: AudioCaptureSource {
             throw CaptureError.converterUnavailable
         }
 
-        let (stream, continuation) = AsyncStream<[Int16]>.makeStream(bufferingPolicy: .bufferingNewest(64))
+        let (stream, continuation) = AsyncStream<[Int16]>.makeStream(bufferingPolicy: .bufferingNewest(24))
         self.continuation = continuation
         self.engine = engine
 

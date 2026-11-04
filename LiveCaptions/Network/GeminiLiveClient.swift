@@ -54,9 +54,9 @@ actor GeminiLiveClient {
     private var isSetupComplete = false
     private var reconnectAttempt = 0
     private var resumptionHandle: String?
-    /// setupComplete 前到达的音频不能丢弃，否则启动后的第一句话会被截断。
+    /// setupComplete 前只保留很短的尾部，避免恢复连接后回放数秒旧音频造成延迟。
     private var pendingRealtimeInputs: [GeminiClientMessage.RealtimeInput] = []
-    private let maxPendingRealtimeInputs = 300
+    private let maxPendingRealtimeInputs = 24
 
     /// 当前是否处于一次“用户活动”（已发送 activityStart 但尚未 activityEnd）
     private var activityOpen = false
@@ -484,7 +484,13 @@ actor GeminiLiveClient {
     private func sendRealtime(_ input: GeminiClientMessage.RealtimeInput) async {
         guard isSetupComplete else {
             if pendingRealtimeInputs.count >= maxPendingRealtimeInputs {
-                pendingRealtimeInputs.removeFirst()
+                // 控制消息必须保留；只淘汰最早的音频帧，确保 activityStart /
+                // activityEnd 仍能和保留下来的实时音频保持正确顺序。
+                if let index = pendingRealtimeInputs.firstIndex(where: { $0.audio != nil }) {
+                    pendingRealtimeInputs.remove(at: index)
+                } else {
+                    pendingRealtimeInputs.removeFirst()
+                }
             }
             pendingRealtimeInputs.append(input)
             return

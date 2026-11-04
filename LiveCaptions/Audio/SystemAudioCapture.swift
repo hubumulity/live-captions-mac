@@ -43,7 +43,7 @@ actor SystemAudioCapture: AudioCaptureSource {
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
         config.showsCursor = false
 
-        let (asyncStream, continuation) = AsyncStream<[Int16]>.makeStream(bufferingPolicy: .bufferingNewest(64))
+        let (asyncStream, continuation) = AsyncStream<[Int16]>.makeStream(bufferingPolicy: .bufferingNewest(24))
         self.continuation = continuation
 
         let output = AudioStreamOutput(continuation: continuation)
