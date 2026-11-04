@@ -471,7 +471,8 @@ actor GeminiLiveClient {
             // 3. 转写停滞检测：有音频持续发出（用户在说话）但 20s 无任何转写，
             //    说明模型侧卡住（Ping 成功只证明链路通，不代表模型在干活）。
             //    主动重连比等 30s 超时更快恢复。
-            if isSetupComplete,
+            if !isLiveTranslateMode,
+               isSetupComplete,
                ContinuousClock.now - lastTranscriptAt >= .seconds(20),
                ContinuousClock.now - lastOutboundAt < .seconds(20) {
                 await handleDisconnect(reason: "转写停滞超过 20 秒，正在重连")
