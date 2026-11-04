@@ -415,26 +415,29 @@ actor GeminiLiveClient {
         }
 
         if let content = message.serverContent {
+            var gotTranscript = false
             if isLiveTranslateMode {
                 // 翻译模型：inputTranscription = 原文增量，outputTranscription = 译文增量
                 // （Mimi 同款：两者都按增量/累积重发处理，不读 interimInputTranscription 避免重复）
                 if let source = content.inputTranscription?.text, !source.isEmpty {
                     emit(.transcriptDelta(source))
+                    gotTranscript = true
                 }
                 if let translated = content.outputTranscription?.text, !translated.isEmpty {
                     emit(.translationDelta(translated))
+                    gotTranscript = true
                 }
             } else {
                 if let interim = content.interimInputTranscription?.text, !interim.isEmpty {
                     emit(.transcript(text: interim, isFinal: false))
+                    gotTranscript = true
                 }
                 if let final = content.inputTranscription?.text, !final.isEmpty {
                     emit(.transcript(text: final, isFinal: true))
+                    gotTranscript = true
                 }
             }
-            if content.inputTranscription?.text.isEmpty == false
-                || content.outputTranscription?.text.isEmpty == false
-                || content.interimInputTranscription?.text.isEmpty == false {
+            if gotTranscript {
                 lastTranscriptAt = .now
             }
             // generationComplete 同样视为 turn 边界（与 turnComplete 一起定稿）
