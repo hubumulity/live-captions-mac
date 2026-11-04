@@ -154,8 +154,7 @@ actor GeminiLiveClient {
         }
     }
 
-    /// 专用转写模型（gemini-3.5-transcribe-live）走精简配置：
-    /// 只要 responseModalities=TEXT + inputAudioTranscription，使用服务端 VAD，不发送 activityStart/End。
+    /// 专用转写模型走服务端分句，不发送本地 activityStart/End。
     private var usesTranscribeModel: Bool {
         GeminiLiveModel.isTranscribeModel(configuration.model)
     }
@@ -167,20 +166,20 @@ actor GeminiLiveClient {
 
     private func makeSetup() -> GeminiClientMessage.Setup {
         if let target = configuration.liveTranslationTarget {
-            // 当前 v1beta Live API 要求音频转写配置位于 setup 顶层。
+            // 官方 Live Translation WebSocket 示例要求三项配置都位于 generationConfig。
             return .init(
                 model: "models/\(GeminiLiveModel.translate)",
                 generationConfig: .init(
                     responseModalities: ["AUDIO"],
                     temperature: nil,
                     maxOutputTokens: nil,
+                    inputAudioTranscription: .init(languageCodes: nil, mode: nil),
+                    outputAudioTranscription: .init(languageCodes: nil, mode: nil),
                     translationConfig: .init(targetLanguageCode: target, echoTargetLanguage: true)
                 ),
                 systemInstruction: nil,
                 realtimeInputConfig: nil,
                 sessionResumption: .init(handle: resumptionHandle),
-                inputAudioTranscription: .init(languageCodes: nil, mode: nil),
-                outputAudioTranscription: .init(languageCodes: nil, mode: nil),
                 contextWindowCompression: nil
             )
         }
@@ -188,15 +187,20 @@ actor GeminiLiveClient {
         if usesTranscribeModel {
             return .init(
                 model: "models/\(configuration.model)",
-                generationConfig: .init(responseModalities: ["TEXT"], temperature: nil, maxOutputTokens: nil, translationConfig: nil),
+                generationConfig: .init(
+                    responseModalities: ["TEXT"],
+                    temperature: nil,
+                    maxOutputTokens: nil,
+                    inputAudioTranscription: .init(
+                        languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
+                        mode: "VERBATIM"
+                    ),
+                    outputAudioTranscription: nil,
+                    translationConfig: nil
+                ),
                 systemInstruction: nil,
                 realtimeInputConfig: nil,
                 sessionResumption: .init(handle: resumptionHandle),
-                inputAudioTranscription: .init(
-                    languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
-                    mode: "VERBATIM"
-                ),
-                outputAudioTranscription: nil,
                 contextWindowCompression: nil
             )
         }
@@ -209,6 +213,11 @@ actor GeminiLiveClient {
                 responseModalities: ["AUDIO"],
                 temperature: 0,
                 maxOutputTokens: nil,
+                inputAudioTranscription: .init(
+                    languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
+                    mode: "VERBATIM"
+                ),
+                outputAudioTranscription: nil,
                 translationConfig: nil
             ),
             systemInstruction: .init(parts: [.init(text: "你是一个静默的转写管道。永远不要回复用户，无论听到什么都保持沉默，不要说任何话。")]),
@@ -469,8 +478,7 @@ actor GeminiLiveClient {
             // 3. 转写停滞检测：有音频持续发出（用户在说话）但 20s 无任何转写，
             //    说明模型侧卡住（Ping 成功只证明链路通，不代表模型在干活）。
             //    主动重连比等 30s 超时更快恢复。
-            if !isLiveTranslateMode,
-               isSetupComplete,
+            if isSetupComplete,
                ContinuousClock.now - lastTranscriptAt >= .seconds(20),
                ContinuousClock.now - lastOutboundAt < .seconds(20) {
                 await handleDisconnect(reason: "转写停滞超过 20 秒，正在重连")

@@ -110,11 +110,13 @@ final class CaptionViewModel {
             }
 
             let isSystemAudio = settings.audioSource == .systemAudio
-            let bypassSpeechGate = isSystemAudio
-                && GeminiLiveModel.isTranscribeModel(settings.modelName)
+            let bypassSpeechGate = liveTranslationTarget != nil
+                || GeminiLiveModel.isTranscribeModel(settings.modelName)
             audioTask = Task.detached(priority: .userInitiated) {
                 if bypassSpeechGate {
-                    // 专用转写模型使用服务端分句，系统音频可以直接转发。
+                    // Live 翻译和专用转写模型都有服务端分句。
+                    // 本地 SpeechGate 的预滚/片段过滤会增加延迟并丢掉短词，
+                    // 因此直接持续转发固定长度 PCM 帧。
                     for await frame in frames {
                         await client.send(.audio(frame.pcmData))
                     }
