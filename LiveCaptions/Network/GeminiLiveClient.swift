@@ -52,9 +52,12 @@ actor GeminiLiveClient {
 
     private var shouldRun = false
     private var isSetupComplete = false
+    /// 初次建连前允许短暂缓存音频；发生过断线后不能回放旧音频，否则会把实时流拖成数秒延迟。
+    private var hasEstablishedConnection = false
     private var reconnectAttempt = 0
     private var resumptionHandle: String?
-    /// setupComplete 前到达的音频不能丢弃，否则启动后的第一句话会被截断。
+    /// 首次 setupComplete 前到达的音频不能丢弃，否则启动后的第一句话会被截断。
+    /// 已建立连接后的重连阶段则由 sendRealtime 丢弃旧帧，优先保证实时性。
     private var pendingRealtimeInputs: [GeminiClientMessage.RealtimeInput] = []
     private let maxPendingRealtimeInputs = 300
 
@@ -255,6 +258,8 @@ actor GeminiLiveClient {
     }
 
     private func handleDisconnect(reason: String) async {
+        // 重连期间采集仍在继续，但这些帧已经过时。丢弃它们，避免恢复后按序回放造成持续延迟。
+        pendingRealtimeInputs.removeAll(keepingCapacity: true)
         await tearDownSocket(closeCode: .abnormalClosure)
         guard shouldRun else { return }
         emit(.error(reason))
@@ -366,6 +371,7 @@ actor GeminiLiveClient {
 
         if message.setupComplete != nil {
             isSetupComplete = true
+            hasEstablishedConnection = true
             reconnectAttempt = 0
             // 这些时间戳属于当前 WebSocket 会话。若沿用旧连接的时间，
             // 新连接建立后可能因旧会话的 20 秒停滞计时立即再次重连。
@@ -430,6 +436,7 @@ actor GeminiLiveClient {
 
     private func proactiveReconnect() async {
         guard shouldRun else { return }
+        pendingRealtimeInputs.removeAll(keepingCapacity: true)
         await tearDownSocket(closeCode: .goingAway)
         reconnectAttempt = 0
         await openConnection()
@@ -483,6 +490,9 @@ actor GeminiLiveClient {
 
     private func sendRealtime(_ input: GeminiClientMessage.RealtimeInput) async {
         guard isSetupComplete else {
+            // 只缓存初次 setup 尚未完成时的启动音频。断线重连期间必须保持实时性，
+            // 不能把恢复前的旧帧排队后再发送。
+            guard !hasEstablishedConnection else { return }
             if pendingRealtimeInputs.count >= maxPendingRealtimeInputs {
                 pendingRealtimeInputs.removeFirst()
             }
