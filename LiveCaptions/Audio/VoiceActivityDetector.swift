@@ -116,6 +116,20 @@ struct VoiceActivityDetector: Sendable {
         var hangoverFrames: Int = 15
         /// 噪声底上调的平滑系数（越小越慢）
         var noiseRiseRate: Float = 0.02
+
+        init(
+            energyMarginDb: Float = 9,
+            absoluteFloorDb: Float = -55,
+            maxFlatness: Float = 0.55,
+            hangoverFrames: Int = 15,
+            noiseRiseRate: Float = 0.02
+        ) {
+            self.energyMarginDb = energyMarginDb
+            self.absoluteFloorDb = absoluteFloorDb
+            self.maxFlatness = maxFlatness
+            self.hangoverFrames = hangoverFrames
+            self.noiseRiseRate = noiseRiseRate
+        }
     }
 
     var config = Config()
