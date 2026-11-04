@@ -317,6 +317,7 @@ final class CaptionViewModel {
               let merged = Self.mergeChunk(captions[index].translation ?? "", delta)
         else { return }
         captions[index].translation = merged
+        trimToMaxLines()
     }
 
     // MARK: - 分句判定（settle loop，Mimi turn 提交语义）
@@ -374,6 +375,7 @@ final class CaptionViewModel {
         else { return }
         captions[index].translation = text
         captions[index].translationIsFinal = false
+        trimToMaxLines()
     }
 
     /// 定稿当前行。forQuietCheckpoint=true 是静默分句（模型不知道边界），记下已定稿
@@ -390,6 +392,7 @@ final class CaptionViewModel {
             lastFinalized = (id, ContinuousClock.now)
             scheduleExpiry(for: id)
         }
+        trimToMaxLines()
         activeCaptionID = nil
         committedText = ""
         lastTranscriptDeltaAt = nil
@@ -414,12 +417,36 @@ final class CaptionViewModel {
     }
 
     private func trimToMaxLines() {
-        let overflow = captions.count - settings.maxCaptionLines
-        guard overflow > 0 else { return }
-        for removed in captions.prefix(overflow) {
+        let lineBudget = max(1, settings.maxCaptionLines)
+        var remaining = lineBudget
+        var retained: [Caption] = []
+
+        // Keep the newest caption first. Older captions are retained only when
+        // their rendered line budget still leaves room for the newest one.
+        for caption in captions.reversed() {
+            let lineCount = renderedLineCount(for: caption)
+            if retained.isEmpty || lineCount <= remaining {
+                retained.insert(caption, at: 0)
+                remaining -= lineCount
+            }
+        }
+
+        let retainedIDs = Set(retained.map(\.id))
+        for removed in captions where !retainedIDs.contains(removed.id) {
             expiryTasks[removed.id]?.cancel()
             expiryTasks[removed.id] = nil
         }
-        captions.removeFirst(overflow)
+        captions = retained
+    }
+
+    /// Estimate the actual vertical space used by one caption block. This
+    /// mirrors CaptionLine's line limits so old blocks are evicted before they
+    /// can push the newest block outside the overlay.
+    private func renderedLineCount(for caption: Caption) -> Int {
+        let primaryLines = caption.isFinal ? 4 : 3
+        let hasSecondary = settings.translationEnabled
+            && settings.showOriginalText
+            && !(caption.translation ?? "").isEmpty
+        return primaryLines + (hasSecondary ? 1 : 0)
     }
 }

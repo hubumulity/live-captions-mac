@@ -98,7 +98,7 @@ struct SettingsView: View {
             }
 
             Section("字幕显示") {
-                LabeledContent("同时显示的最大字幕条数：\(settings.maxCaptionLines)") {
+                LabeledContent("同时显示的最大字幕行数：\(settings.maxCaptionLines)") {
                     Slider(
                         value: Binding(
                             get: { Double(settings.maxCaptionLines) },
