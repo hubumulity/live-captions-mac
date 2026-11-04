@@ -86,16 +86,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         window.title = "Live Captions 设置"
         window.center()
         window.delegate = self
+        // 设置窗口是应用级单例。关闭按钮只隐藏窗口，避免 AppKit 在
+        // windowWillClose 回调期间释放 NSHostingController/SwiftUI 树。
+        window.isReleasedWhenClosed = false
         settingsWindow = window
 
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
 
-    func windowWillClose(_ notification: Notification) {
-        if (notification.object as? NSWindow) == settingsWindow {
-            settingsWindow = nil
-        }
+    func windowShouldClose(_ window: NSWindow) -> Bool {
+        guard window === settingsWindow else { return true }
+        window.orderOut(nil)
+        return false
     }
 
     // MARK: - 状态栏菜单（原生 AppKit）
