@@ -167,22 +167,20 @@ actor GeminiLiveClient {
 
     private func makeSetup() -> GeminiClientMessage.Setup {
         if let target = configuration.liveTranslationTarget {
-            // Mimi 式 Live 翻译（gemini-3.5-live-translate-preview）：
-            // generationConfig 只带 AUDIO + translationConfig，转写开关放 setup 顶层，
-            // 不设 systemInstruction / realtimeInputConfig，由模型自己切分 turn。
+            // Live 翻译的原文/译文转写配置必须位于 generationConfig 内。
             return .init(
                 model: "models/\(GeminiLiveModel.translate)",
                 generationConfig: .init(
                     responseModalities: ["AUDIO"],
                     temperature: nil,
                     maxOutputTokens: nil,
+                    inputAudioTranscription: .init(languageCodes: nil, mode: nil),
+                    outputAudioTranscription: .init(languageCodes: nil, mode: nil),
                     translationConfig: .init(targetLanguageCode: target, echoTargetLanguage: true)
                 ),
                 systemInstruction: nil,
                 realtimeInputConfig: nil,
                 sessionResumption: .init(handle: resumptionHandle),
-                inputAudioTranscription: .init(languageCodes: nil, mode: nil),
-                outputAudioTranscription: .init(languageCodes: nil, mode: nil),
                 contextWindowCompression: nil
             )
         }
@@ -194,11 +192,6 @@ actor GeminiLiveClient {
                 systemInstruction: nil,
                 realtimeInputConfig: nil,
                 sessionResumption: .init(handle: resumptionHandle),
-                inputAudioTranscription: .init(
-                    languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
-                    mode: "VERBATIM"
-                ),
-                outputAudioTranscription: nil,
                 contextWindowCompression: nil
             )
         }
@@ -211,6 +204,11 @@ actor GeminiLiveClient {
                 responseModalities: ["AUDIO"],
                 temperature: 0,
                 maxOutputTokens: nil,
+                inputAudioTranscription: .init(
+                    languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
+                    mode: "VERBATIM"
+                ),
+                outputAudioTranscription: nil,
                 translationConfig: nil
             ),
             systemInstruction: .init(parts: [.init(text: "你是一个静默的转写管道。永远不要回复用户，无论听到什么都保持沉默，不要说任何话。")]),
@@ -221,11 +219,6 @@ actor GeminiLiveClient {
                 turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY"
             ),
             sessionResumption: .init(handle: resumptionHandle),
-            inputAudioTranscription: .init(
-                languageCodes: configuration.languageHints.isEmpty ? nil : configuration.languageHints,
-                mode: "VERBATIM"
-            ),
-            outputAudioTranscription: nil,
             contextWindowCompression: .init(slidingWindow: .init(targetTokens: nil))
         )
     }

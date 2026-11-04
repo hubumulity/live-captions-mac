@@ -13,9 +13,6 @@ struct GeminiClientMessage: Encodable, Sendable {
         var systemInstruction: Content?
         var realtimeInputConfig: RealtimeInputConfig?
         var sessionResumption: SessionResumption?
-        var inputAudioTranscription: AudioTranscriptionConfig?
-        /// 原生音频模型只能输出 AUDIO；开启后服务端会把模型语音转成文字一并下发
-        var outputAudioTranscription: AudioTranscriptionConfig?
         var contextWindowCompression: ContextWindowCompression?
     }
 
@@ -23,13 +20,15 @@ struct GeminiClientMessage: Encodable, Sendable {
         var responseModalities: [String]
         var temperature: Double?
         var maxOutputTokens: Int?
+        var inputAudioTranscription: AudioTranscriptionConfig?
+        /// 开启后服务端会把模型语音转成文字一并下发。
+        var outputAudioTranscription: AudioTranscriptionConfig?
         /// Mimi 式 Live 翻译专用：只在翻译模型 setup 里出现
         var translationConfig: TranslationConfig?
     }
 
     /// Live 翻译配置（gemini-3.5-live-translate-preview）。
-    /// 注意：转写开关 inputAudioTranscription / outputAudioTranscription 必须放在 setup 顶层，
-    /// 只有 translationConfig 属于 generationConfig（Mimi 已验证的形状）。
+    /// translationConfig 与音频转写开关都属于 generationConfig。
     struct TranslationConfig: Encodable, Sendable {
         var targetLanguageCode: String
         var echoTargetLanguage: Bool
