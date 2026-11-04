@@ -137,6 +137,10 @@ struct VoiceActivityDetector: Sendable {
     private var hangover = 0
     private var warmupFrames = 25 // 前 0.5 s 只学习噪声底
 
+    init(config: Config = Config()) {
+        self.config = config
+    }
+
     /// 返回该帧是否属于“语音活动”（含 hangover）。
     mutating func process(_ features: FrameFeatures) -> Bool {
         if warmupFrames > 0 {
